@@ -1,0 +1,25 @@
+name: Validate Extension Files
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Check JavaScript syntax
+        run: |
+          node --check background.js
+          node --check content.js
+          node --check page-bridge.js
+          node --check i18n.js
+          node --check popup/popup.js
+      - name: Check manifest JSON
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('manifest.json','utf8')); console.log('manifest ok')"
+          node -e "JSON.parse(require('fs').readFileSync('chrome-mv3-template/manifest.mv3.chrome.json','utf8')); console.log('mv3 template ok')"

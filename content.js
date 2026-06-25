@@ -108,6 +108,8 @@
     displayTranslationCache: new Map(),
     displayTranslationInflight: new Map(),
     lastOverlaySignature: '',
+    lastHandledVideoTimeMs: -1,
+    videoEventTarget: null,
     lastRenderedOriginal: '',
     lastRenderedTranslation: '',
     lastRenderedStatus: '',
@@ -253,8 +255,15 @@
       button = document.createElement('button');
       button.type = 'button';
       button.className = 'ytp-button ytbbi-player-toggle';
-      const iconUrl = EXT.runtime.getURL('icons/icon-48.png');
-      button.innerHTML = `<span class="ytbbi-player-toggle-chip" aria-hidden="true"><img class="ytbbi-player-toggle-icon" src="${iconUrl}" alt=""></span>`;
+      button.innerHTML = `
+        <span class="ytbbi-player-toggle-icon" aria-hidden="true">
+          <svg class="ytbbi-player-toggle-svg" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+            <rect class="ytbbi-player-toggle-box" x="3.5" y="5.5" width="17" height="13" rx="3.2"></rect>
+            <path class="ytbbi-player-toggle-line" d="M7.4 10.2h5.2M7.4 13.7h3.6"></path>
+            <circle class="ytbbi-player-toggle-badge" cx="16.3" cy="14" r="3.9"></circle>
+            <path class="ytbbi-player-toggle-mark" d="M14.7 14h3.2M16.3 12.4v3.2"></path>
+          </svg>
+        </span>`;
       button.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -649,10 +658,17 @@
     });
   };
 
+  const getVideoElement = () => document.querySelector('video');
+
   const getVideoCurrentMs = () => {
-    const video = document.querySelector('video');
+    const video = getVideoElement();
     const seconds = Number(video?.currentTime || 0);
     return Number.isFinite(seconds) ? Math.max(0, Math.round(seconds * 1000)) : 0;
+  };
+
+  const isVideoPaused = () => {
+    const video = getVideoElement();
+    return !!video && (video.paused || video.ended);
   };
 
 
@@ -1730,6 +1746,14 @@
       return;
     }
 
+    const nowMsForPauseGuard = getVideoCurrentMs();
+    if (isVideoPaused() && state.lastCaptionText && Math.abs(nowMsForPauseGuard - state.lastHandledVideoTimeMs) < 140) {
+      // When a video is paused, YouTube may still mutate caption DOM or our
+      // transcript watcher may fire. Do not advance to future transcript cues
+      // unless the user actually seeks to a different timestamp.
+      return;
+    }
+
     const visibleCaptionText = getVisibleCaptionText();
     ensureTranscriptForCurrentVideo(visibleCaptionText || state.lastCaptionText || '').catch((error) => log('timedtext load failed', error));
 
@@ -1750,6 +1774,8 @@
       hideOverlay();
       return;
     }
+
+    state.lastHandledVideoTimeMs = getVideoCurrentMs();
 
     const captionKey = stableCaptionText
       ? `stable|${findCurrentCueIndex(visibleCaptionText)}|${captionText}`
@@ -1866,10 +1892,12 @@
 
     const body = popover.querySelector('.ytbbi-pop-body');
     const image = result.image || result.visualImage || null;
-    const imageMarkup = image?.url ? `
+    const imageSrc = image?.dataUrl || image?.url || '';
+    const imageHref = image?.sourceUrl || image?.url || '';
+    const imageMarkup = imageSrc ? `
       <section class="ytbbi-pop-image-section">
-        <a class="ytbbi-pop-image-link" href="${escapeText(image.sourceUrl || image.url)}" target="_blank" rel="noreferrer">
-          <img class="ytbbi-pop-image" src="${escapeText(image.url)}" alt="${escapeText((result.word || result.term || 'word') + ' image')}" loading="lazy" />
+        <a class="ytbbi-pop-image-link" href="${escapeText(imageHref || imageSrc)}" target="_blank" rel="noreferrer">
+          <img class="ytbbi-pop-image" src="${escapeText(imageSrc)}" alt="${escapeText((result.word || result.term || 'word') + ' image')}" loading="lazy" />
           <span class="ytbbi-pop-image-caption">${escapeText(image.caption || image.title || image.source || t('wordImageCaption'))}</span>
         </a>
       </section>` : '';
@@ -2027,11 +2055,43 @@
   };
 
 
+  const installVideoEventListeners = () => {
+    const video = getVideoElement();
+    if (!video || state.videoEventTarget === video) return;
+    if (state.videoEventTarget) {
+      ['play', 'playing', 'pause', 'seeked', 'seeking', 'timeupdate', 'ratechange'].forEach((eventName) => {
+        state.videoEventTarget.removeEventListener(eventName, state.videoEventHandler, true);
+      });
+    }
+    state.videoEventTarget = video;
+    state.videoEventHandler = (event) => {
+      if (!state.settings.enabled) return;
+      const nowMs = getVideoCurrentMs();
+      if (event.type === 'pause') {
+        state.lastHandledVideoTimeMs = nowMs;
+        return;
+      }
+      if (event.type === 'seeking' || event.type === 'seeked') {
+        state.currentStableCaptionKey = '';
+        state.lastCaptionText = '';
+        state.lastTranslatedText = '';
+        resetVisibleBufferState(false);
+      }
+      scheduleCaptionRead();
+      if (!isVideoPaused()) scheduleUpcomingPrefetch(state.lastCaptionText);
+    };
+    ['play', 'playing', 'pause', 'seeked', 'seeking', 'timeupdate', 'ratechange'].forEach((eventName) => {
+      video.addEventListener(eventName, state.videoEventHandler, true);
+    });
+  };
+
   const startPlaybackWatcher = () => {
     clearInterval(state.playbackTimer);
     state.playbackTimer = setInterval(() => {
       if (!state.playerToggleButton || !state.playerToggleButton.isConnected) schedulePlayerToggleEnsure(100);
+      installVideoEventListeners();
       if (!state.settings.enabled) return;
+      if (isVideoPaused()) return;
       if (!state.transcriptCues.length) {
         ensureTranscriptForCurrentVideo(state.lastCaptionText || getVisibleCaptionText() || '').catch((error) => log('timedtext load failed', error));
         return;
@@ -2095,6 +2155,7 @@
     applyOverlayPositionForCurrentVideo();
     startObserver();
     startRouteWatcher();
+    installVideoEventListeners();
     startPlaybackWatcher();
     installMessageListener();
     ensureTranscriptForCurrentVideo('').catch((error) => log('timedtext init failed', error));

@@ -1,3 +1,30 @@
+## v0.29.0
+
+- 將播放器內切換按鈕改為 inline SVG，不再使用圖片檔嵌入播放器控制列。
+- 移除圓形玻璃底與狀態點，改成更接近 YouTube 原生控制列的簡潔線條 icon。
+- 開啟狀態顯示青綠色；關閉狀態顯示灰白色，避免不同語言使用者依賴文字判斷。
+
+## v0.28.0
+
+- 優化播放器內雙語字幕切換按鈕外觀。
+- 將原本較生硬的方形視覺調整為較圓潤的玻璃感圓形按鈕。
+- 保留本專案 icon，並以彩色 / 黑白切換狀態呈現。
+- 新增小狀態點與較自然的 hover / focus 視覺。
+
+## v0.27.0
+
+- 修正單字卡圖片在 YouTube 頁面可能無法顯示的問題：背景腳本會先抓取縮圖並轉成 data URL，再交給 content script 顯示。
+- 新增 `upload.wikimedia.org` 權限，用於 Wikimedia / Wikipedia 圖片縮圖讀取。
+- 放寬 Commons SVG 圖片支援，但仍過濾 logo、flag、map、diagram 等低相關圖片。
+- 修正影片暫停後字幕仍可能繼續切到後續片段的問題：暫停狀態會凍結字幕推進，只有播放或使用者 seek 後才更新。
+
+## v0.26.0
+
+- 移除硬編碼的 Google API Key。
+- 移除內建 Google Web Translate provider 與 `removed Google Web API endpoint` 權限。
+- 自動免費翻譯順序調整為 Microsoft Edge Translate → Google Free → Google Dictionary → Lingva → LibreTranslate → MyMemory。
+- 若舊版設定仍選到 `google-html`，會自動回退到 `auto-free`。
+
 ## v0.25.0
 
 - 將播放器內雙語字幕開關由文字 `雙 / OFF` 改為使用本專案 icon 顯示狀態。

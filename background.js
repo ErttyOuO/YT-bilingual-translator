@@ -3,7 +3,7 @@
 
   const IS_BROWSER_PROMISE_API = typeof browser !== 'undefined';
   const EXT = IS_BROWSER_PROMISE_API ? browser : chrome;
-  const EXT_NAME = 'YT Bilingual Translator Drag Image';
+  const EXT_NAME = 'YT Bilingual Translator';
 
   const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
@@ -34,9 +34,7 @@
     transcriptFirstMode: true
   });
 
-  const PROVIDERS = Object.freeze({
-    'google-html': { label: 'Google translateHtml', delayMs: 450, timeoutMs: 8500, cooldownBaseMs: 16000 },
-    'microsoft-edge': { label: 'Microsoft Edge Translate', delayMs: 260, timeoutMs: 9000, cooldownBaseMs: 14000 },
+  const PROVIDERS = Object.freeze({    'microsoft-edge': { label: 'Microsoft Edge Translate', delayMs: 260, timeoutMs: 9000, cooldownBaseMs: 14000 },
     'google-free': { label: 'Google Free', delayMs: 680, timeoutMs: 8500, cooldownBaseMs: 20000 },
     'google-dict': { label: 'Google Dictionary Endpoint', delayMs: 780, timeoutMs: 8500, cooldownBaseMs: 24000 },
     'lingva': { label: 'Lingva', delayMs: 760, timeoutMs: 10500, cooldownBaseMs: 22000 },
@@ -46,14 +44,10 @@
     'cloud-v3-proxy': { label: 'Google Cloud v3 Proxy', delayMs: 120, timeoutMs: 10000, cooldownBaseMs: 12000 }
   });
 
-  const AUTO_FREE_ORDER = ['google-html', 'microsoft-edge', 'google-free', 'google-dict', 'lingva', 'libretranslate', 'mymemory'];
-  const GOOGLE_FALLBACK_ORDER = ['google-html', 'microsoft-edge', 'google-free', 'google-dict', 'lingva', 'libretranslate', 'mymemory'];
+  const AUTO_FREE_ORDER = ['microsoft-edge', 'google-free', 'google-dict', 'lingva', 'libretranslate', 'mymemory'];
+  const GOOGLE_FALLBACK_ORDER = ['microsoft-edge', 'google-free', 'google-dict', 'lingva', 'libretranslate', 'mymemory'];
   const MICROSOFT_AUTH_URL = 'https://edge.microsoft.com/translate/auth';
-  const MICROSOFT_TRANSLATE_URL = 'https://api-edge.cognitive.microsofttranslator.com/translate';
-  const GOOGLE_TRANSLATE_HTML_URL = 'https://translate-pa.googleapis.com/v1/translateHtml';
-  const GOOGLE_TRANSLATE_HTML_API_KEY = 'AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520';
-  const GOOGLE_TRANSLATE_HTML_CLIENT = 'wt_lib';
-  const MAX_CACHE_SIZE = 1800;
+  const MICROSOFT_TRANSLATE_URL = 'https://api-edge.cognitive.microsofttranslator.com/translate';  const MAX_CACHE_SIZE = 1800;
   const DEFAULT_BATCH_SIZE = 5;
   const MAX_BATCH_SIZE = 8;
   const BATCH_SEPARATOR = '\n§§§ YTBBI_BATCH_SPLIT §§§\n';
@@ -124,7 +118,9 @@
 
   const getSettings = async () => {
     const stored = await storageGet(DEFAULT_SETTINGS);
-    return { ...DEFAULT_SETTINGS, ...stored, sourceLang: 'auto' };
+    const merged = { ...DEFAULT_SETTINGS, ...stored, sourceLang: 'auto' };
+    if (merged.translationProvider === 'google-html') merged.translationProvider = 'auto-free';
+    return merged;
   };
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms || 0)));
@@ -261,43 +257,6 @@
       }
     }
     return '';
-  };
-
-  const parseGoogleHtmlTranslation = (data) => {
-    if (Array.isArray(data) && Array.isArray(data[0]) && typeof data[0][0] === 'string') {
-      return normalizeText(decodeHtml(data[0][0]));
-    }
-    if (Array.isArray(data) && Array.isArray(data[0]) && Array.isArray(data[0][0]) && typeof data[0][0][0] === 'string') {
-      return normalizeText(decodeHtml(data[0].map((item) => item?.[0] || '').join('')));
-    }
-    return '';
-  };
-
-  const translateViaGoogleHtml = async ({ text, sourceLang, targetLang }) => {
-    const provider = 'google-html';
-    const source = providerLanguage(provider, sourceLang || 'auto');
-    const target = providerLanguage(provider, targetLang || 'zh-TW');
-    const payload = [
-      [[text], source, target],
-      GOOGLE_TRANSLATE_HTML_CLIENT
-    ];
-    const response = await fetchWithTimeout(provider, GOOGLE_TRANSLATE_HTML_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json+protobuf',
-        'X-Goog-API-Key': GOOGLE_TRANSLATE_HTML_API_KEY
-      },
-      body: JSON.stringify(payload),
-      credentials: 'omit',
-      cache: 'no-store'
-    });
-    const data = await response.json().catch(() => null);
-    if (!response.ok) {
-      throw new ProviderError(provider, `Google translateHtml failed: ${response.status}`, response.status);
-    }
-    const translated = parseGoogleHtmlTranslation(data);
-    if (!translated) throw new ProviderError(provider, 'Unexpected Google translateHtml response shape.', response.status);
-    return translated;
   };
 
   const getMicrosoftToken = async () => {
@@ -478,7 +437,6 @@
   const callProvider = (provider, args) => {
     if (provider === 'cloud-v2') return translateViaCloudV2(args);
     if (provider === 'cloud-v3-proxy') return translateViaCloudV3Proxy(args);
-    if (provider === 'google-html') return translateViaGoogleHtml(args);
     if (provider === 'microsoft-edge') return translateViaMicrosoftEdge(args);
     if (provider === 'libretranslate') return translateViaLibreTranslate(args);
     if (provider === 'lingva') return translateViaLingva(args);
@@ -491,11 +449,10 @@
     const provider = settings.translationProvider || 'auto-free';
     if (provider === 'auto-free') return AUTO_FREE_ORDER.slice();
     if (provider === 'google-free' && settings.autoFailover !== false) return GOOGLE_FALLBACK_ORDER.slice();
-    if (provider === 'google-html' && settings.autoFailover !== false) return ['google-html', 'microsoft-edge', 'google-free', 'google-dict', 'lingva', 'libretranslate', 'mymemory'];
-    if (provider === 'microsoft-edge' && settings.autoFailover !== false) return ['microsoft-edge', 'google-html', 'google-free', 'google-dict', 'lingva', 'libretranslate', 'mymemory'];
-    if (provider === 'lingva' && settings.autoFailover !== false) return ['lingva', 'google-html', 'microsoft-edge', 'google-free', 'google-dict', 'libretranslate', 'mymemory'];
-    if (provider === 'libretranslate' && settings.autoFailover !== false) return ['libretranslate', 'google-html', 'microsoft-edge', 'google-free', 'google-dict', 'lingva', 'mymemory'];
-    if (provider === 'mymemory' && settings.autoFailover !== false) return ['mymemory', 'google-html', 'microsoft-edge', 'google-free', 'google-dict', 'lingva', 'libretranslate'];
+    if (provider === 'microsoft-edge' && settings.autoFailover !== false) return ['microsoft-edge', 'google-free', 'google-dict', 'lingva', 'libretranslate', 'mymemory'];
+    if (provider === 'lingva' && settings.autoFailover !== false) return ['lingva', 'microsoft-edge', 'google-free', 'google-dict', 'libretranslate', 'mymemory'];
+    if (provider === 'libretranslate' && settings.autoFailover !== false) return ['libretranslate', 'microsoft-edge', 'google-free', 'google-dict', 'lingva', 'mymemory'];
+    if (provider === 'mymemory' && settings.autoFailover !== false) return ['mymemory', 'microsoft-edge', 'google-free', 'google-dict', 'lingva', 'libretranslate'];
     return [provider];
   };
 
@@ -654,15 +611,6 @@ ${text}`)
     return parts;
   };
 
-  const translateBatchViaGoogleHtml = async ({ texts, sourceLang, targetLang }) => {
-    const provider = 'google-html';
-    const marked = buildMarkedBatchInput(texts);
-    const translated = await translateViaGoogleHtml({ text: marked, sourceLang, targetLang });
-    const parts = splitMarkedTranslation(translated, texts.length);
-    if (!parts) throw new ProviderError(provider, 'Google translateHtml batch markers were not preserved.', 422);
-    return parts;
-  };
-
   const translateBatchViaMicrosoftEdge = async ({ texts, sourceLang, targetLang }) => {
     const provider = 'microsoft-edge';
     const token = await getMicrosoftToken();
@@ -770,7 +718,6 @@ ${text}`)
   const callProviderBatch = (provider, args) => {
     if (provider === 'cloud-v2') return translateBatchViaCloudV2(args);
     if (provider === 'cloud-v3-proxy') return translateBatchViaCloudV3Proxy(args);
-    if (provider === 'google-html') return translateBatchViaGoogleHtml(args);
     if (provider === 'microsoft-edge') return translateBatchViaMicrosoftEdge(args);
     if (provider === 'libretranslate') return translateBatchViaLibreTranslate(args);
     // Free Google, Google Dictionary, Lingva, and MyMemory do not reliably expose
@@ -915,6 +862,42 @@ ${text}`)
     }
   };
 
+  const arrayBufferToBase64 = (buffer) => {
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 0x8000;
+    let binary = '';
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+      const chunk = bytes.subarray(index, index + chunkSize);
+      binary += String.fromCharCode.apply(null, chunk);
+    }
+    return btoa(binary);
+  };
+
+  const fetchImageDataUrl = async (url, timeoutMs = 7000) => {
+    if (!/^https:\/\//i.test(String(url || ''))) return '';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        credentials: 'omit',
+        cache: 'force-cache',
+        signal: controller.signal,
+        headers: { 'Accept': 'image/avif,image/webp,image/png,image/jpeg,image/svg+xml,image/*;q=0.8,*/*;q=0.5' }
+      });
+      if (!response.ok) return '';
+      const contentType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      if (!contentType.startsWith('image/')) return '';
+      const buffer = await response.arrayBuffer();
+      if (!buffer || buffer.byteLength > 900000) return '';
+      return `data:${contentType};base64,${arrayBufferToBase64(buffer)}`;
+    } catch (_error) {
+      return '';
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   const stripHtml = (text) => normalizeText(String(text || '').replace(/<[^>]+>/g, ' '));
 
   const looksLikeBadCommonsTitle = (title) => /\b(logo|icon|flag|map|diagram|symbol|seal|coat of arms|svg|locator|emblem|qr|barcode)\b/i.test(String(title || ''));
@@ -928,8 +911,10 @@ ${text}`)
     const imageUrl = data.thumbnail?.source || data.originalimage?.source || '';
     if (!imageUrl || !/^https:\/\//i.test(imageUrl)) return null;
     const title = normalizeText(data.title || normalized);
+    const dataUrl = await fetchImageDataUrl(imageUrl).catch(() => '');
     return {
       url: imageUrl,
+      dataUrl,
       title,
       caption: data.description ? `${title} · ${normalizeText(data.description)}` : title,
       source: 'Wikipedia',
@@ -960,13 +945,15 @@ ${text}`)
       if (!title || looksLikeBadCommonsTitle(title)) continue;
       const info = page.imageinfo?.[0];
       if (!info || !String(info.mime || '').startsWith('image/')) continue;
-      if (/svg|gif/i.test(info.mime || '') || /\.svg$/i.test(title)) continue;
-      if (Number(info.width || 0) < 120 || Number(info.height || 0) < 120) continue;
+      if (/gif/i.test(info.mime || '')) continue;
+      if (Number(info.width || 0) < 80 || Number(info.height || 0) < 80) continue;
       const imageUrl = info.thumburl || info.url || '';
       if (!/^https:\/\//i.test(imageUrl)) continue;
       const objectName = stripHtml(info.extmetadata?.ObjectName?.value || '').slice(0, 90);
+      const dataUrl = await fetchImageDataUrl(imageUrl).catch(() => '');
       return {
         url: imageUrl,
+        dataUrl,
         title: objectName || title.replace(/^File:/i, ''),
         caption: objectName || title.replace(/^File:/i, ''),
         source: 'Wikimedia Commons',

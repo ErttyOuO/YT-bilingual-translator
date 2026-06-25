@@ -121,7 +121,7 @@ maybe their whole life.
 `background.js` 中的 provider 順序目前是：
 
 ```text
-Google translateHtml
+Google Translate Web endpoint
 → Microsoft Edge Translate
 → Google Free
 → Google Dictionary endpoint

@@ -1,0 +1,11 @@
+.DS_Store
+Thumbs.db
+*.xpi
+*.zip
+*.crx
+*.pem
+node_modules/
+dist/
+build/
+.env
+.env.*

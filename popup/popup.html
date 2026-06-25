@@ -100,8 +100,7 @@
         <label class="field">
           <span data-i18n="translationProvider">翻譯方式</span>
           <select id="translationProvider">
-            <option value="auto-free" data-i18n="providerAutoFree">自動免費模式（Google translateHtml + Microsoft + Google + 備援）</option>
-            <option value="google-html" data-i18n="providerGoogleHtml">Google translateHtml（較穩免費模式）</option>
+            <option value="auto-free" data-i18n="providerAutoFree">自動免費模式（Microsoft + Google + 備援）</option>
             <option value="microsoft-edge" data-i18n="providerMicrosoft">Microsoft Edge Translate（免費批次備援）</option>
             <option value="google-free" data-i18n="providerGoogleFree">免費 Google 翻譯（免 API Key／免 Cloud Project）</option>
             <option value="cloud-v2" data-i18n="providerCloudV2">官方 Google Cloud Translation Basic v2（API Key）</option>
@@ -174,7 +173,7 @@
     <section id="panel-advanced" class="panel">
       <section class="section card provider-field provider-cloud-v2">
         <h2 data-i18n="cloudSection">Google Cloud</h2>
-        <label class="field"><span data-i18n="cloudApiKey">Google Cloud API Key</span><input id="googleCloudApiKey" type="password" placeholder="AIza..." data-i18n-placeholder="cloudApiKeyPlaceholder" autocomplete="off" /><small data-i18n="cloudApiKeyHelp">只在官方 Cloud Basic v2 模式使用。免費 Google 模式不需要填。</small></label>
+        <label class="field"><span data-i18n="cloudApiKey">Google Cloud API Key</span><input id="googleCloudApiKey" type="password" placeholder="Google Cloud API Key" data-i18n-placeholder="cloudApiKeyPlaceholder" autocomplete="off" /><small data-i18n="cloudApiKeyHelp">只在官方 Cloud Basic v2 模式使用。免費 Google 模式不需要填。</small></label>
       </section>
       <section class="section card provider-field provider-cloud-v3-proxy">
         <h2 data-i18n="cloudV3Section">Cloud v3 Proxy</h2>
