@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title data-i18n="appTitle">YouTube 雙語字幕</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="header">
+      <div>
+        <h1 data-i18n="appTitle">YouTube 雙語字幕</h1>
+        <p data-i18n="appSubtitle">可拖曳字幕 + 批次預載 + 翻譯備援 + 英英/目標語言單字卡</p>
+      </div>
+      <label class="switch" data-i18n-title="switchTitle" title="開啟或關閉翻譯字幕">
+        <input id="enabled" type="checkbox" />
+        <span></span>
+      </label>
+    </header>
+
+    <section id="onboarding" class="onboarding" hidden>
+      <div class="onboarding-card">
+        <div class="onboarding-progress"><span id="onboardingStepBadge">1 / 2</span></div>
+        <div id="onboardingStep1" class="onboarding-step onboarding-language-step">
+          <h2>選擇介面語言 / Choose display language</h2>
+          <p>第一次使用時，請先選擇外掛顯示語言。<br />First, choose the language used by the extension interface.</p>
+          <label class="field">
+            <span>插件顯示語言 / Extension display language</span>
+            <select id="onboardingUiLanguage">
+              <option value="zh-TW">繁體中文</option>
+              <option value="en">English</option>
+              <option value="ja">日本語</option>
+              <option value="ko">한국어</option>
+              <option value="es">Español</option>
+              <option value="zh-CN">简体中文</option>
+            </select>
+          </label>
+          <p class="onboarding-hint">選擇後會立即切換介面語言。<br />The interface language changes immediately after selection.</p>
+          <button id="onboardingNext" type="button" class="wide">下一步 / Next</button>
+        </div>
+        <div id="onboardingStep2" class="onboarding-step" hidden>
+          <h2 data-i18n="onboardingStep2Title">選擇字幕翻譯目標語言</h2>
+          <p data-i18n="onboardingStep2Text">來源字幕會自動偵測，這裡選擇你希望翻成的語言。</p>
+          <label class="field">
+            <span data-i18n="targetLanguage">翻譯目標語言</span>
+            <select id="onboardingTargetLang" class="target-language-select"></select>
+          </label>
+          <div class="button-row">
+            <button id="onboardingBack" type="button" class="secondary" data-i18n="onboardingBack">上一步</button>
+            <button id="onboardingDone" type="button" data-i18n="onboardingDone">開始使用</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <nav class="tabs" aria-label="Settings sections">
+      <button type="button" class="tab active" data-panel="panel-general" data-i18n="tabGeneral">一般</button>
+      <button type="button" class="tab" data-panel="panel-translation" data-i18n="tabTranslation">翻譯</button>
+      <button type="button" class="tab" data-panel="panel-subtitle" data-i18n="tabSubtitle">字幕</button>
+      <button type="button" class="tab" data-panel="panel-learning" data-i18n="tabLearning">學習</button>
+      <button type="button" class="tab" data-panel="panel-advanced" data-i18n="tabAdvanced">進階</button>
+    </nav>
+
+    <div id="panelStack" class="panel-stack" data-direction="forward">
+    <section id="panel-general" class="panel active">
+      <section class="section card">
+        <h2 data-i18n="generalSection">基本設定</h2>
+        <label class="field">
+          <span data-i18n="uiLanguage">插件顯示語言</span>
+          <select id="uiLanguage">
+            <option value="zh-TW">繁體中文</option>
+            <option value="en">English</option>
+            <option value="ja">日本語</option>
+            <option value="ko">한국어</option>
+            <option value="es">Español</option>
+            <option value="zh-CN">简体中文</option>
+          </select>
+          <small data-i18n="uiLanguageHelp">只會改變外掛介面文字；不會改變字幕翻譯目標語言。</small>
+        </label>
+        <label class="field">
+          <span data-i18n="targetLanguage">翻譯目標語言</span>
+          <select id="targetLang" class="target-language-select"></select>
+          <small data-i18n="targetLanguageHelp">來源字幕自動偵測；此設定決定字幕翻譯成哪一種語言。</small>
+        </label>
+        <input id="sourceLang" type="hidden" value="auto" />
+        <input id="learningMode" type="hidden" value="auto-target" />
+        <div class="note" data-i18n="targetLanguageNote">建議語言學習時保留「顯示原文」與「顯示翻譯」，可同時看原文與目標語言。</div>
+      </section>
+
+      <section class="section card compact-actions">
+        <h2 data-i18n="quickActionsSection">快速操作</h2>
+        <button id="testTranslation" type="button" class="wide secondary" data-i18n="testProvider">測試目前翻譯來源</button>
+      </section>
+    </section>
+
+    <section id="panel-translation" class="panel">
+      <section class="section card">
+        <h2 data-i18n="providerSection">翻譯來源</h2>
+        <label class="field">
+          <span data-i18n="translationProvider">翻譯方式</span>
+          <select id="translationProvider">
+            <option value="auto-free" data-i18n="providerAutoFree">自動免費模式（Google translateHtml + Microsoft + Google + 備援）</option>
+            <option value="google-html" data-i18n="providerGoogleHtml">Google translateHtml（較穩免費模式）</option>
+            <option value="microsoft-edge" data-i18n="providerMicrosoft">Microsoft Edge Translate（免費批次備援）</option>
+            <option value="google-free" data-i18n="providerGoogleFree">免費 Google 翻譯（免 API Key／免 Cloud Project）</option>
+            <option value="cloud-v2" data-i18n="providerCloudV2">官方 Google Cloud Translation Basic v2（API Key）</option>
+            <option value="cloud-v3-proxy" data-i18n="providerCloudV3">官方 Google Cloud Translation v3 translateText（Proxy）</option>
+            <option value="libretranslate" data-i18n="providerLibre">LibreTranslate（開源／可自架）</option>
+            <option value="lingva" data-i18n="providerLingva">Lingva Translate（Google Translate 前端備用）</option>
+          </select>
+          <small id="providerHelp"></small>
+        </label>
+        <label class="check"><input id="autoFailover" type="checkbox" /> <span data-i18n="autoFailover">免費來源失敗時自動切換備援</span></label>
+      </section>
+
+      <section class="section card">
+        <h2 data-i18n="prefetchSection">預取與批次翻譯</h2>
+        <label class="check"><input id="batchTranslationEnabled" type="checkbox" /> <span data-i18n="batchTranslationEnabled">預取字幕時合併成批次翻譯，降低請求數</span></label>
+        <label class="field">
+          <span data-i18n="batchSize">每批句數</span>
+          <select id="batchSize">
+            <option value="3" data-i18n="batch3">3 句：較穩</option>
+            <option value="5" data-i18n="batch5">5 句：推薦</option>
+            <option value="8" data-i18n="batch8">8 句：請求更少但較可能拆句失敗</option>
+          </select>
+          <small data-i18n="batchHelp">只影響後方字幕預取；會預載目前時間後約 30 秒字幕。</small>
+        </label>
+      </section>
+    </section>
+
+    <section id="panel-subtitle" class="panel">
+      <section class="section card grid2">
+        <h2 class="full" data-i18n="displaySection">字幕顯示</h2>
+        <label class="check"><input id="showOriginal" type="checkbox" /> <span data-i18n="showOriginal">顯示原文</span></label>
+        <label class="check"><input id="showTranslation" type="checkbox" /> <span data-i18n="showTranslation">顯示翻譯</span></label>
+        <label class="check"><input id="hideNativeCaptions" type="checkbox" /> <span data-i18n="hideNativeCaptions">隱藏 YouTube 原字幕</span></label>
+        <label class="check"><input id="stableAutoCaptions" type="checkbox" /> <span data-i18n="stableAutoCaptions">自動字幕穩定分段</span></label>
+        <label class="check full"><input id="transcriptFirstMode" type="checkbox" /> <span data-i18n="transcriptFirstMode">優先使用完整字幕資料，不依賴畫面字幕跳字</span></label>
+      </section>
+      <section class="section card">
+        <h2 data-i18n="appearanceSection">字幕外觀</h2>
+        <label class="range"><span><span data-i18n="fontSize">字幕大小</span> <b id="fontSizeLabel"></b></span><input id="fontSize" type="range" min="12" max="34" step="1" /></label>
+        <label class="range"><span><span data-i18n="bottomPercent">字幕高度</span> <b id="bottomPercentLabel"></b></span><input id="bottomPercent" type="range" min="5" max="40" step="1" /></label>
+        <label class="range"><span><span data-i18n="maxWidthPercent">字幕寬度</span> <b id="maxWidthPercentLabel"></b></span><input id="maxWidthPercent" type="range" min="60" max="98" step="1" /></label>
+      </section>
+    </section>
+
+    <section id="panel-learning" class="panel">
+      <section class="section card">
+        <h2 data-i18n="interactiveSection">互動式字幕</h2>
+        <label class="check"><input id="interactiveLookup" type="checkbox" /> <span data-i18n="interactiveLookup">點擊 / hover 英文單字顯示單字卡</span></label>
+        <label class="check"><input id="showWordUnderline" type="checkbox" /> <span data-i18n="showWordUnderline">在可查詢單字下方顯示虛線</span></label>
+        <label class="field">
+          <span data-i18n="dictionaryMode">單字卡顯示</span>
+          <select id="dictionaryMode">
+            <option value="both" data-i18n="dictionaryBoth">英英 + 目標語言</option>
+            <option value="zh" data-i18n="dictionaryZh">只顯示目標語言</option>
+            <option value="en" data-i18n="dictionaryEn">只顯示英英</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="section vocab-section card">
+        <h2><span data-i18n="vocabSection">單字本</span> <span id="vocabCount">0</span></h2>
+        <div id="vocabList" class="vocab-list"></div>
+        <div class="button-row">
+          <button id="exportVocab" type="button" class="secondary" data-i18n="exportJson">匯出 JSON</button>
+          <button id="clearVocab" type="button" class="danger" data-i18n="clear">清空</button>
+        </div>
+      </section>
+    </section>
+
+    <section id="panel-advanced" class="panel">
+      <section class="section card provider-field provider-cloud-v2">
+        <h2 data-i18n="cloudSection">Google Cloud</h2>
+        <label class="field"><span data-i18n="cloudApiKey">Google Cloud API Key</span><input id="googleCloudApiKey" type="password" placeholder="AIza..." data-i18n-placeholder="cloudApiKeyPlaceholder" autocomplete="off" /><small data-i18n="cloudApiKeyHelp">只在官方 Cloud Basic v2 模式使用。免費 Google 模式不需要填。</small></label>
+      </section>
+      <section class="section card provider-field provider-cloud-v3-proxy">
+        <h2 data-i18n="cloudV3Section">Cloud v3 Proxy</h2>
+        <label class="field"><span data-i18n="cloudV3ProxyUrl">v3 Proxy URL</span><input id="cloudV3ProxyUrl" type="url" placeholder="https://your-service.run.app/translate" data-i18n-placeholder="cloudV3ProxyPlaceholder" /><small data-i18n="cloudV3ProxyHelp">只在官方 Advanced v3 模式使用；不要把 service account 放進外掛。</small></label>
+      </section>
+      <section class="section card provider-field provider-libretranslate">
+        <h2 data-i18n="libreSection">LibreTranslate</h2>
+        <label class="field"><span data-i18n="libreUrl">LibreTranslate URL</span><input id="libreTranslateUrl" type="url" placeholder="https://libretranslate.com" data-i18n-placeholder="libreUrlPlaceholder" /><small data-i18n="libreUrlHelp">可填公開服務或自架 URL。</small></label>
+        <label class="field"><span data-i18n="libreApiKey">LibreTranslate API Key（選用）</span><input id="libreTranslateApiKey" type="password" placeholder="需要時再填" data-i18n-placeholder="libreApiKeyPlaceholder" autocomplete="off" /></label>
+      </section>
+      <section class="section card provider-field provider-lingva">
+        <h2 data-i18n="lingvaSection">Lingva</h2>
+        <label class="field"><span data-i18n="lingvaUrl">Lingva Instance URL</span><input id="lingvaInstanceUrl" type="url" placeholder="https://lingva.ml" data-i18n-placeholder="lingvaUrlPlaceholder" /><small data-i18n="lingvaUrlHelp">公開 instance 可能不穩，適合作為備用。</small></label>
+      </section>
+
+      <section class="section card project-info-card">
+        <h2 data-i18n="projectInfoSection">專案資訊</h2>
+        <div class="link-list">
+          <a class="project-link" data-external-link href="https://github.com/ErttyOuO/YT-bilingual-translator" target="_blank" rel="noopener noreferrer">
+            <span data-i18n="projectGithub">本專案 GitHub</span>
+            <small>github.com/ErttyOuO/YT-bilingual-translator</small>
+          </a>
+          <a class="project-link" data-external-link href="https://github.com/ErttyOuO" target="_blank" rel="noopener noreferrer">
+            <span data-i18n="assistedBy">ErttyOuO 協助製作</span>
+            <small>github.com/ErttyOuO</small>
+          </a>
+        </div>
+      </section>
+
+      <section class="section card project-info-card">
+        <h2 data-i18n="openSourceReferences">參考與學習的開源專案</h2>
+        <p class="reference-note" data-i18n="referenceHelp">本專案重寫實作，沒有直接複製 GPL 專案程式碼；以下專案作為字幕架構、預取、備援與互動學習設計參考。</p>
+        <div class="reference-grid">
+          <a data-external-link href="https://github.com/mengxi-ream/read-frog" target="_blank" rel="noopener noreferrer">Read Frog</a>
+          <a data-external-link href="https://github.com/reza-nzri/yt-dual-sub" target="_blank" rel="noopener noreferrer">yt-dual-sub</a>
+          <a data-external-link href="https://github.com/rxliuli/bilingualtube" target="_blank" rel="noopener noreferrer">BilingualTube</a>
+          <a data-external-link href="https://github.com/orange2ai/youtube-subtitle-translator" target="_blank" rel="noopener noreferrer">YouTube Subtitle Translator</a>
+          <a data-external-link href="https://github.com/garywill/multi-subs-yt" target="_blank" rel="noopener noreferrer">multi-subs-yt</a>
+          <a data-external-link href="https://github.com/wangruofeng/youtube-live-translate" target="_blank" rel="noopener noreferrer">youtube-live-translate</a>
+        </div>
+      </section>
+
+      <section class="section card">
+        <h2 data-i18n="developerSection">開發與除錯</h2>
+        <label class="check"><input id="debug" type="checkbox" /> <span data-i18n="debug">Debug log</span></label>
+      </section>
+    </section>
+
+    </div>
+
+    <footer class="footer">
+      <button id="save" type="button" data-i18n="save">套用設定</button>
+      <button id="reset" type="button" class="secondary" data-i18n="reset">重設</button>
+      <p id="status" role="status"></p>
+    </footer>
+  </main>
+  <script src="../i18n.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,415 @@
+:root {
+  --ytbbi-font-size: 18px;
+  --ytbbi-bottom: 12%;
+  --ytbbi-max-width: 86%;
+}
+
+.ytbbi-overlay {
+  position: absolute;
+  left: 50%;
+  bottom: var(--ytbbi-bottom);
+  transform: translateX(-50%);
+  z-index: 2147483646;
+  max-width: var(--ytbbi-max-width);
+  width: max-content;
+  box-sizing: border-box;
+  pointer-events: none;
+  text-align: center;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "Microsoft JhengHei", Arial, sans-serif;
+  color: #fff;
+  line-height: 1.35;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+
+.ytbbi-overlay.ytbbi-visible {
+  opacity: 1;
+}
+
+.ytbbi-card {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.64);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  max-width: 100%;
+  pointer-events: auto;
+}
+
+.ytbbi-original,
+.ytbbi-translation {
+  display: block;
+  overflow-wrap: anywhere;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95);
+}
+
+.ytbbi-original {
+  font-size: calc(var(--ytbbi-font-size) * 0.92);
+  opacity: 0.9;
+  font-weight: 500;
+}
+
+.ytbbi-translation {
+  font-size: var(--ytbbi-font-size);
+  font-weight: 700;
+}
+
+.ytbbi-status {
+  font-size: calc(var(--ytbbi-font-size) * 0.72);
+  opacity: 0.82;
+}
+
+.ytbbi-word {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  padding: 0 1px;
+  margin: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-shadow: inherit;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.ytbbi-word:hover,
+.ytbbi-word:focus-visible {
+  background: rgba(255, 255, 255, 0.18);
+  outline: none;
+}
+
+.ytbbi-word-underline .ytbbi-word {
+  text-decoration: underline dotted rgba(255, 255, 255, 0.55);
+  text-underline-offset: 3px;
+}
+
+.ytbbi-popover {
+  position: fixed;
+  z-index: 2147483647;
+  box-sizing: border-box;
+  max-height: min(460px, calc(100vh - 24px));
+  overflow: auto;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.98);
+  color: #101614;
+  box-shadow: 0 14px 46px rgba(0, 0, 0, 0.34);
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "Microsoft JhengHei", Arial, sans-serif;
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+  transition: opacity 120ms ease-out, transform 120ms ease-out;
+}
+
+.ytbbi-popover.ytbbi-pop-visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.ytbbi-pop-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.ytbbi-pop-word {
+  display: block;
+  font-size: 22px;
+  line-height: 1.15;
+}
+
+.ytbbi-pop-phonetic {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #607068;
+}
+
+.ytbbi-pop-close {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 0;
+  background: #edf2ef;
+  color: #25352e;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ytbbi-pop-body {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px 14px;
+}
+
+.ytbbi-pop-section {
+  display: grid;
+  gap: 4px;
+}
+
+.ytbbi-pop-label {
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #edf2ef;
+  color: #607068;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.ytbbi-pop-section p,
+.ytbbi-loading,
+.ytbbi-error,
+.ytbbi-vocab-status {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ytbbi-pop-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 2px;
+}
+
+.ytbbi-add-vocab {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  border-radius: 999px;
+  background: #1f8f5f;
+  color: #fff;
+  padding: 7px 11px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ytbbi-audio {
+  color: #1f6750;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.ytbbi-vocab-status {
+  color: #607068;
+  min-height: 18px;
+}
+
+.ytbbi-error {
+  color: #b3261e;
+}
+
+.ytbbi-hide-native-captions .ytp-caption-window-container,
+.ytbbi-hide-native-captions .ytp-caption-window-container *,
+.ytbbi-hide-native-captions .caption-window,
+.ytbbi-hide-native-captions .caption-window *,
+.ytbbi-hide-native-captions .ytp-caption-segment {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  .ytbbi-popover {
+    background: rgba(20, 24, 22, 0.98);
+    color: #eef5f0;
+    border-color: rgba(255, 255, 255, 0.14);
+  }
+  .ytbbi-pop-head {
+    border-bottom-color: rgba(255, 255, 255, 0.12);
+  }
+  .ytbbi-pop-phonetic,
+  .ytbbi-vocab-status {
+    color: #9fb0a7;
+  }
+  .ytbbi-pop-label,
+  .ytbbi-pop-close {
+    background: #2a332e;
+    color: #d9e7df;
+  }
+  .ytbbi-audio {
+    color: #8bd1b2;
+  }
+}
+
+@media (max-width: 640px) {
+  :root {
+    --ytbbi-font-size: 16px;
+    --ytbbi-bottom: 16%;
+    --ytbbi-max-width: 94%;
+  }
+
+  .ytbbi-card {
+    padding: 7px 10px;
+    border-radius: 10px;
+  }
+
+  .ytbbi-popover {
+    left: 12px !important;
+    right: 12px !important;
+    width: auto !important;
+    max-height: 50vh;
+  }
+}
+
+.ytbbi-drag-handle {
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 0;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.78);
+  color: rgba(255, 255, 255, 0.9);
+  font: 700 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+  cursor: grab;
+  opacity: 0;
+  pointer-events: auto;
+  touch-action: none;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.24);
+  transition: opacity 120ms ease-out, transform 120ms ease-out;
+}
+
+.ytbbi-card:hover .ytbbi-drag-handle,
+.ytbbi-drag-handle:focus-visible,
+.ytbbi-overlay.ytbbi-dragging .ytbbi-drag-handle {
+  opacity: 1;
+}
+
+.ytbbi-drag-handle:active,
+.ytbbi-overlay.ytbbi-dragging .ytbbi-drag-handle {
+  cursor: grabbing;
+  transform: scale(1.04);
+}
+
+.ytbbi-overlay.ytbbi-dragging {
+  transition: none;
+  user-select: none;
+}
+
+.ytbbi-pop-image-section {
+  margin: -2px 0 2px;
+}
+
+.ytbbi-pop-image-link {
+  display: grid;
+  gap: 5px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.ytbbi-pop-image {
+  display: block;
+  width: 100%;
+  max-height: 160px;
+  object-fit: cover;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.ytbbi-pop-image-caption {
+  font-size: 11px;
+  line-height: 1.35;
+  color: #607068;
+}
+
+@media (prefers-color-scheme: dark) {
+  .ytbbi-pop-image-caption {
+    color: #9fb0a7;
+  }
+}
+
+.ytbbi-card {
+  position: relative;
+}
+
+/* v0.25 in-player bilingual subtitle toggle */
+.ytbbi-player-toggle {
+  position: relative;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  min-width: 38px !important;
+  width: 38px !important;
+  height: 36px !important;
+  padding: 0 !important;
+  opacity: .94;
+  vertical-align: top;
+}
+
+.ytbbi-player-toggle-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, .28);
+  background: rgba(12, 14, 18, .72);
+  box-shadow: 0 1px 6px rgba(0,0,0,.28);
+  transition: background-color 160ms ease, border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease, filter 160ms ease;
+  overflow: hidden;
+}
+
+.ytbbi-player-toggle-icon {
+  width: 17px;
+  height: 17px;
+  display: block;
+  object-fit: contain;
+  transition: filter 160ms ease, opacity 160ms ease, transform 160ms ease;
+}
+
+.ytbbi-player-toggle:hover .ytbbi-player-toggle-chip,
+.ytbbi-player-toggle:focus-visible .ytbbi-player-toggle-chip {
+  transform: translateY(-1px) scale(1.03);
+}
+
+.ytbbi-player-toggle-on .ytbbi-player-toggle-chip {
+  background: linear-gradient(180deg, rgba(28, 163, 110, .95), rgba(18, 122, 82, .95));
+  border-color: rgba(165, 255, 218, .72);
+  box-shadow: 0 2px 10px rgba(18, 122, 82, .35);
+}
+
+.ytbbi-player-toggle-on .ytbbi-player-toggle-icon {
+  filter: none;
+  opacity: 1;
+}
+
+.ytbbi-player-toggle-off .ytbbi-player-toggle-chip {
+  background: rgba(38, 40, 46, .78);
+  border-color: rgba(255, 255, 255, .18);
+}
+
+.ytbbi-player-toggle-off .ytbbi-player-toggle-icon {
+  filter: grayscale(1) brightness(2.15) contrast(.85);
+  opacity: .88;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ytbbi-player-toggle-chip,
+  .ytbbi-player-toggle-icon {
+    transition: none !important;
+    transform: none !important;
+  }
+}
