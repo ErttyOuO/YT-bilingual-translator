@@ -12,9 +12,11 @@
     showOriginal: true,
     showTranslation: true,
     hideNativeCaptions: true,
+    requireNativeCaptions: true,
+    autoEnableNativeCaptions: false,
     fontSize: 18,
     bottomPercent: 12,
-    maxWidthPercent: 86,
+    maxWidthPercent: 92,
     sourceLang: 'auto',
     debug: false,
     translationProvider: 'auto-free',
@@ -79,6 +81,7 @@
     transcriptSeq: 0,
     transcriptCues: [],
     transcriptRawCues: [],
+    transcriptVideoId: '',
     transcriptTrackLang: '',
     transcriptIsAuto: false,
     currentStableCaptionKey: '',
@@ -98,6 +101,7 @@
     visibleProgressiveMode: false,
     emptyCaptionTimer: null,
     pagePlayerResponse: null,
+    pageVideoId: '',
     pageSelectedTrack: null,
     pageAudioTrack: null,
     observedTimedtextUrls: [],
@@ -114,7 +118,15 @@
     lastRenderedTranslation: '',
     lastRenderedStatus: '',
     translationStatusTimer: 0,
-    initialized: false
+    initialized: false,
+    activeVideoId: '',
+    activePlayerElement: null,
+    lastNativeCaptionClickAt: 0,
+    lastBridgeRefreshAt: 0,
+    nativeCaptionAutoEnableVideoId: '',
+    nativeCaptionUserDisabledVideoId: '',
+    nativeCaptionStateVideoId: '',
+    lastKnownNativeCaptionActive: false
   };
 
 
@@ -198,14 +210,106 @@
 
   const sendMessage = (message) => callMaybePromise(EXT.runtime.sendMessage, EXT.runtime, message);
 
+  const isShortsPage = () => /^\/shorts(?:\/|$)/.test(location.pathname);
+  const isWatchPage = () => {
+    try {
+      return location.pathname === '/watch' && new URL(location.href).searchParams.has('v');
+    } catch (_error) {
+      return false;
+    }
+  };
+  const isEmbedPage = () => /^\/embed\//.test(location.pathname);
+  const isSupportedVideoPage = () => isWatchPage() || isShortsPage() || isEmbedPage();
+
+  const getVisibleElementScore = (element) => {
+    if (!element?.getBoundingClientRect) return 0;
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 16 || rect.height <= 16) return 0;
+    if (rect.bottom <= 0 || rect.right <= 0 || rect.top >= window.innerHeight || rect.left >= window.innerWidth) return 0;
+
+    const visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+    const visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+    const visibleArea = visibleWidth * visibleHeight;
+    const area = Math.max(1, rect.width * rect.height);
+    const visibleRatio = visibleArea / area;
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const distanceFromCenter = Math.hypot(centerX - window.innerWidth / 2, centerY - window.innerHeight / 2);
+    const centerBonus = Math.max(0, 1 - distanceFromCenter / Math.max(window.innerWidth, window.innerHeight));
+    return visibleArea + visibleRatio * 120000 + centerBonus * 20000;
+  };
+
+  const selectActiveVideoElement = () => {
+    const videos = Array.from(document.querySelectorAll('video'));
+    if (!videos.length) return null;
+    if (videos.length === 1) return videos[0];
+
+    const candidates = videos
+      .map((video) => {
+        let score = getVisibleElementScore(video);
+        const player = video.closest?.('.html5-video-player');
+        if (player?.id === 'shorts-player') score += 60000;
+        if (video.closest?.('ytd-reel-video-renderer, ytd-shorts')) score += 40000;
+        if (!video.paused && !video.ended) score += 30000;
+        return { video, score };
+      })
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score);
+
+    return candidates[0]?.video || videos.find((video) => !video.paused && !video.ended) || videos[0];
+  };
+
   const findPlayer = () => {
+    const activeVideo = selectActiveVideoElement();
+    const playerFromVideo = activeVideo?.closest?.('.html5-video-player');
+    if (playerFromVideo) return playerFromVideo;
+
+    if (isShortsPage()) {
+      const shortsPlayer = document.getElementById('shorts-player');
+      if (shortsPlayer) return shortsPlayer;
+      const reelPlayer = document.querySelector('ytd-reel-video-renderer .html5-video-player, ytd-shorts .html5-video-player');
+      if (reelPlayer) return reelPlayer;
+    }
+
     return (
+      document.querySelector('#movie_player.html5-video-player') ||
       document.querySelector('.html5-video-player') ||
-      document.querySelector('#movie_player') ||
       document.querySelector('ytd-player') ||
-      document.querySelector('video')?.parentElement ||
+      activeVideo?.parentElement ||
       document.body
     );
+  };
+
+  const getActiveReelRoot = () => {
+    const activeVideo = selectActiveVideoElement();
+    return (
+      activeVideo?.closest?.('ytd-reel-video-renderer, ytd-shorts') ||
+      document.querySelector('ytd-reel-video-renderer[is-active], ytd-reel-video-renderer[active], ytd-reel-video-renderer, ytd-shorts')
+    );
+  };
+
+  const responseMatchesCurrentVideo = (response) => {
+    const currentVideoId = getVideoId();
+    const responseVideoId = normalizeText(response?.videoDetails?.videoId || '');
+    return !currentVideoId || !responseVideoId || currentVideoId === responseVideoId;
+  };
+
+  const pageBridgeMatchesCurrentVideo = () => {
+    const currentVideoId = getVideoId();
+    return !currentVideoId || !state.pageVideoId || currentVideoId === state.pageVideoId;
+  };
+
+  const hasPageSelectedTrackForCurrentVideo = () => {
+    return !!(state.pageSelectedTrack?.baseUrl && pageBridgeMatchesCurrentVideo());
+  };
+
+  const refreshPagePlayerDataSoon = () => {
+    if (!isSupportedVideoPage()) return;
+    syncPageBridgeState(true);
+    const now = Date.now();
+    if (now - state.lastBridgeRefreshAt < 900) return;
+    state.lastBridgeRefreshAt = now;
+    requestPagePlayerData().then(() => scheduleCaptionRead()).catch((error) => log('bridge refresh failed', error));
   };
 
   const updatePlayerToggleState = () => {
@@ -217,6 +321,149 @@
     button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
     button.title = enabled ? t('playerToggleOnTitle') : t('playerToggleOffTitle');
     button.setAttribute('aria-label', enabled ? t('playerToggleOnTitle') : t('playerToggleOffTitle'));
+  };
+
+  const CAPTION_BUTTON_SELECTORS = [
+    '.ytp-subtitles-button',
+    'button[aria-label*="字幕"]',
+    'button[title*="字幕"]',
+    'button[aria-label*="Captions" i]',
+    'button[title*="Captions" i]',
+    'button[aria-label*="Subtitles" i]',
+    'button[title*="Subtitles" i]',
+    'button[aria-label*="CC"]',
+    'button[title*="CC"]'
+  ];
+
+  const isVisibleInteractiveElement = (node) => {
+    if (!node?.getBoundingClientRect) return false;
+    const rect = node.getBoundingClientRect();
+    if (rect.width <= 8 || rect.height <= 8) return false;
+    if (rect.bottom <= 0 || rect.right <= 0 || rect.top >= window.innerHeight || rect.left >= window.innerWidth) return false;
+    const style = getComputedStyle(node);
+    return style.visibility !== 'hidden' && style.display !== 'none' && Number(style.opacity || 1) > 0.05;
+  };
+
+  const getNativeCaptionButton = () => {
+    const roots = [findPlayer(), getActiveReelRoot(), document].filter(Boolean);
+    const seenRoots = new Set();
+    for (const root of roots) {
+      if (seenRoots.has(root)) continue;
+      seenRoots.add(root);
+      for (const selector of CAPTION_BUTTON_SELECTORS) {
+        let nodes = [];
+        try { nodes = Array.from(root.querySelectorAll?.(selector) || []); } catch (_error) { nodes = []; }
+        const visible = nodes.find((node) => {
+          if (node.classList?.contains('ytbbi-player-toggle') || node.closest?.('.ytbbi-player-toggle')) return false;
+          if (!isVisibleInteractiveElement(node)) return false;
+          // Avoid picking caption menu rows while the settings menu is open.
+          if (node.closest?.('.ytp-panel, ytd-popup-container, tp-yt-paper-dialog, yt-sheet-view-model')) return false;
+          return true;
+        });
+        if (visible) return visible;
+      }
+    }
+    return null;
+  };
+
+  const isNativeCaptionActive = () => {
+    if (hasPageSelectedTrackForCurrentVideo()) return true;
+
+    const button = getNativeCaptionButton();
+    if (button) {
+      const ariaPressed = String(button.getAttribute('aria-pressed') || '').toLowerCase();
+      if (ariaPressed === 'true') return true;
+      if (ariaPressed === 'false') return false;
+      if (button.classList.contains('ytp-button-active')) return true;
+      const label = `${button.getAttribute('aria-label') || ''} ${button.title || ''}`.toLowerCase();
+      if (/captions?\s+on|subtitles?\s+on|字幕\/?cc 已開啟|字幕已開啟/.test(label)) return true;
+      if (/captions?\s+off|subtitles?\s+off|字幕\/?cc 已關閉|字幕已關閉/.test(label)) return false;
+    }
+
+    const activeVideo = selectActiveVideoElement();
+    try {
+      const tracks = Array.from(activeVideo?.textTracks || []);
+      if (tracks.some((track) => track.mode === 'showing' || (track.mode === 'hidden' && track.activeCues && track.activeCues.length))) return true;
+    } catch (_error) {
+      // Some browsers restrict TextTrack access. Ignore and continue.
+    }
+
+    return false;
+  };
+
+  const getNativeCaptionVideoKey = () => {
+    if (!isSupportedVideoPage()) return '';
+    return getVideoId() || state.pageVideoId || state.activeVideoId || location.href;
+  };
+
+  const observeNativeCaptionState = (active) => {
+    const key = getNativeCaptionVideoKey();
+    if (key && state.nativeCaptionStateVideoId && state.nativeCaptionStateVideoId !== key) {
+      state.lastKnownNativeCaptionActive = false;
+      state.nativeCaptionUserDisabledVideoId = '';
+    }
+    if (key) state.nativeCaptionStateVideoId = key;
+
+    // If captions were active and then become inactive on the same video, treat
+    // that as a user choice. Do not keep forcing CC back on until a new video is
+    // loaded.
+    if (!active && state.lastKnownNativeCaptionActive && key) {
+      state.nativeCaptionUserDisabledVideoId = key;
+    }
+    state.lastKnownNativeCaptionActive = !!active;
+  };
+
+  const maybeAutoEnableNativeCaptions = () => {
+    if (!isSupportedVideoPage()) return false;
+    if (!state.settings.autoEnableNativeCaptions) return false;
+
+    const key = getNativeCaptionVideoKey();
+    if (key && state.nativeCaptionUserDisabledVideoId === key) return false;
+    if (key && state.nativeCaptionAutoEnableVideoId === key) return false;
+
+    const button = getNativeCaptionButton();
+    if (!button) return false;
+
+    const active = isNativeCaptionActive();
+    observeNativeCaptionState(active);
+    if (active) return false;
+
+    const now = Date.now();
+    if (now - state.lastNativeCaptionClickAt < 1800) return false;
+    state.lastNativeCaptionClickAt = now;
+    if (key) state.nativeCaptionAutoEnableVideoId = key;
+    button.click();
+    refreshPagePlayerDataSoon();
+    return true;
+  };
+
+  const shouldBlockOverlayBecauseNativeCaptionsOff = () => {
+    if (!isSupportedVideoPage()) return true;
+    if (!state.settings.requireNativeCaptions) return false;
+
+    const active = isNativeCaptionActive();
+    observeNativeCaptionState(active);
+    if (active) return false;
+
+    refreshPagePlayerDataSoon();
+    maybeAutoEnableNativeCaptions();
+
+    const activeAfterAttempt = isNativeCaptionActive();
+    observeNativeCaptionState(activeAfterAttempt);
+    return !activeAfterAttempt;
+  };
+
+  const clearCaptionDisplayState = () => {
+    state.lastCaptionText = '';
+    state.lastTranslatedText = '';
+    state.currentStableCaptionKey = '';
+    state.lastOverlaySignature = '';
+    state.lastRenderedOriginal = '';
+    state.lastRenderedTranslation = '';
+    state.lastRenderedStatus = '';
+    clearTimeout(state.translationStatusTimer);
+    resetVisibleBufferState(false);
+    hideOverlay();
   };
 
   const setBilingualModeEnabled = async (enabled) => {
@@ -239,6 +486,11 @@
     }
     state.lastCaptionText = '';
     state.lastTranslatedText = '';
+    if (!isSupportedVideoPage()) {
+      clearCaptionDisplayState();
+      return;
+    }
+    if (next) maybeAutoEnableNativeCaptions();
     scheduleCaptionRead();
   };
 
@@ -246,24 +498,78 @@
     await setBilingualModeEnabled(!state.settings.enabled);
   };
 
+  const deactivateForUnsupportedPage = () => {
+    clearTimeout(state.textTimer);
+    clearTimeout(state.playerToggleTimer);
+    clearTimeout(state.prefetchTimer);
+    clearCaptionDisplayState();
+    closeLookupPopover();
+    resetTranscriptState();
+    resetVisibleBufferState(false);
+    state.pageVideoId = '';
+    state.pageSelectedTrack = null;
+    state.pagePlayerResponse = null;
+    state.activeVideoId = '';
+    state.activePlayerElement = null;
+    if (state.playerToggleButton?.isConnected) state.playerToggleButton.remove();
+    state.playerToggleButton = null;
+    removeDuplicatePlayerToggles(null);
+    syncPageBridgeState(false);
+    document.documentElement.classList.remove('ytbbi-shorts-mode', 'ytbbi-hide-native-captions');
+  };
+
+  const findPlayerToggleHost = () => {
+    if (!isSupportedVideoPage()) return null;
+    const ccButton = getNativeCaptionButton();
+
+    if (isShortsPage()) {
+      if (!ccButton) return null;
+      const shortsCcContainer = ccButton.closest?.('#closed-captioning-button-container, ytm-closed-captioning-button');
+      const parent = ccButton.parentElement;
+      if (!shortsCcContainer || !parent) return null;
+      return { parent, after: ccButton };
+    }
+
+    if (ccButton?.parentElement) return { parent: ccButton.parentElement, after: ccButton };
+
+    const roots = [findPlayer(), document].filter(Boolean);
+    for (const root of roots) {
+      const rightControls = root?.querySelector?.('.ytp-right-controls');
+      if (rightControls) return { parent: rightControls, after: null };
+    }
+
+    return null;
+  };
+
+  const removeDuplicatePlayerToggles = (activeButton) => {
+    const buttons = document.querySelectorAll('.ytbbi-player-toggle');
+    buttons.forEach((button) => {
+      if (button !== activeButton) button.remove();
+    });
+  };
+
   const ensurePlayerToggle = () => {
-    const rightControls = document.querySelector('.ytp-right-controls');
-    if (!rightControls) return null;
+    if (!isSupportedVideoPage()) {
+      if (state.playerToggleButton?.isConnected) state.playerToggleButton.remove();
+      state.playerToggleButton = null;
+      return null;
+    }
+    const host = findPlayerToggleHost();
+    if (!host?.parent) {
+      if (isShortsPage()) {
+        if (state.playerToggleButton?.isConnected) state.playerToggleButton.remove();
+        state.playerToggleButton = null;
+        removeDuplicatePlayerToggles(null);
+      }
+      return null;
+    }
 
     let button = state.playerToggleButton;
     if (!button || !button.isConnected) {
       button = document.createElement('button');
       button.type = 'button';
       button.className = 'ytp-button ytbbi-player-toggle';
-      button.innerHTML = `
-        <span class="ytbbi-player-toggle-icon" aria-hidden="true">
-          <svg class="ytbbi-player-toggle-svg" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-            <rect class="ytbbi-player-toggle-box" x="3.5" y="5.5" width="17" height="13" rx="3.2"></rect>
-            <path class="ytbbi-player-toggle-line" d="M7.4 10.2h5.2M7.4 13.7h3.6"></path>
-            <circle class="ytbbi-player-toggle-badge" cx="16.3" cy="14" r="3.9"></circle>
-            <path class="ytbbi-player-toggle-mark" d="M14.7 14h3.2M16.3 12.4v3.2"></path>
-          </svg>
-        </span>`;
+      button.innerHTML = '<span class="ytbbi-player-toggle-icon" aria-hidden="true"><svg class="ytbbi-player-toggle-svg" viewBox="0 0 36 36" focusable="false"><rect class="ytbbi-player-toggle-box" x="8.5" y="11.5" width="19" height="13" rx="3"></rect><circle class="ytbbi-player-toggle-badge" cx="25.5" cy="14.5" r="2.2"></circle><path class="ytbbi-player-toggle-line" d="M12 16h7"></path><path class="ytbbi-player-toggle-line" d="M12 20h11"></path><path class="ytbbi-player-toggle-mark" d="M24.2 14.5h2.6"></path></svg></span>';
       button.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -272,31 +578,31 @@
       state.playerToggleButton = button;
     }
 
-    // v0.24: avoid repeatedly moving the button on every YouTube UI mutation.
-    // YouTube updates its player controls very often; moving our button every time
-    // creates a mutation feedback loop that can freeze the player. Insert once,
-    // then keep the existing position unless the button was detached.
-    if (button.parentElement !== rightControls) {
-      const ccButton = rightControls.querySelector('.ytp-subtitles-button');
-      if (ccButton && ccButton.parentElement === rightControls) {
-        ccButton.insertAdjacentElement('afterend', button);
+    if (button.parentElement !== host.parent) {
+      if (host.after && host.after.parentElement === host.parent) {
+        host.after.insertAdjacentElement('afterend', button);
       } else {
-        rightControls.insertBefore(button, rightControls.firstElementChild || null);
+        host.parent.insertBefore(button, host.parent.firstElementChild || null);
       }
+    } else if (host.after && button.previousElementSibling !== host.after && host.after.parentElement === host.parent) {
+      host.after.insertAdjacentElement('afterend', button);
     }
 
+    removeDuplicatePlayerToggles(button);
     updatePlayerToggleState();
     return button;
   };
 
   const schedulePlayerToggleEnsure = (delay = 300) => {
     clearTimeout(state.playerToggleTimer);
+    if (!isSupportedVideoPage()) return;
     state.playerToggleTimer = setTimeout(() => {
       ensurePlayerToggle();
     }, delay);
   };
 
   const ensureOverlay = () => {
+    if (!isSupportedVideoPage()) return null;
     const player = findPlayer();
     if (!player) return null;
 
@@ -349,15 +655,41 @@
     return state.overlay;
   };
 
+  const updateShortsLayoutMode = () => {
+    const root = document.documentElement;
+    if (!isShortsPage()) {
+      root.classList.remove('ytbbi-shorts-compact-layout');
+      return false;
+    }
+
+    const video = selectActiveVideoElement();
+    const rect = video?.getBoundingClientRect?.();
+    const videoWidth = rect?.width || 0;
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+
+    // Firefox zoom changes CSS viewport width. On a 1920px monitor at 110% zoom,
+    // the viewport is about 1745px, which is the layout where Shorts metadata can
+    // move over the video center. Treat that and smaller layouts as compact.
+    const compact =
+      viewportWidth <= 1800 ||
+      (videoWidth > 0 && videoWidth <= 520) ||
+      !!document.querySelector('ytd-shorts[is-two-column-layout], ytd-reel-video-renderer[is-two-column-layout]');
+
+    root.classList.toggle('ytbbi-shorts-compact-layout', compact);
+    return compact;
+  };
+
   const applySettingsToDom = () => {
     const root = document.documentElement;
+    root.classList.toggle('ytbbi-shorts-mode', isShortsPage());
+    updateShortsLayoutMode();
     root.style.setProperty('--ytbbi-font-size', `${state.settings.fontSize}px`);
     root.style.setProperty('--ytbbi-bottom', `${state.settings.bottomPercent}%`);
     root.style.setProperty('--ytbbi-max-width', `${state.settings.maxWidthPercent}%`);
 
     document.documentElement.classList.toggle(
       'ytbbi-hide-native-captions',
-      !!state.settings.enabled
+      !!state.settings.enabled && isSupportedVideoPage()
     );
 
     document.documentElement.classList.toggle(
@@ -487,29 +819,41 @@
   };
 
   const getVisibleCaptionText = () => {
-    const pieces = [];
-    const seen = new Set();
+    const collectFromRoot = (root) => {
+      const pieces = [];
+      const seen = new Set();
+      if (!root?.querySelectorAll) return '';
 
-    for (const selector of SELECTORS) {
-      document.querySelectorAll(selector).forEach((node) => {
-        const rect = node.getBoundingClientRect();
-        const text = normalizeText(node.textContent);
-        if (!text) return;
-        if (rect.width === 0 && rect.height === 0) return;
-        if (seen.has(text)) return;
-        seen.add(text);
-        pieces.push(text);
-      });
-      if (pieces.length) break;
-    }
+      for (const selector of SELECTORS) {
+        root.querySelectorAll(selector).forEach((node) => {
+          const rect = node.getBoundingClientRect();
+          const text = normalizeText(node.textContent);
+          if (!text) return;
+          if (rect.width === 0 && rect.height === 0) return;
+          if (rect.bottom <= 0 || rect.right <= 0 || rect.top >= window.innerHeight || rect.left >= window.innerWidth) return;
+          if (seen.has(text)) return;
+          seen.add(text);
+          pieces.push(text);
+        });
+        if (pieces.length) break;
+      }
+      return normalizeText(pieces.join(' '));
+    };
 
-    return normalizeText(pieces.join(' '));
+    return collectFromRoot(findPlayer()) || collectFromRoot(document);
   };
 
   const getVideoId = () => {
+    if (!isSupportedVideoPage()) return '';
     try {
+      const shortsMatch = location.pathname.match(/^\/shorts\/([^/?#]+)/);
+      if (shortsMatch?.[1]) return decodeURIComponent(shortsMatch[1]);
       const url = new URL(location.href);
-      return url.searchParams.get('v') || '';
+      const watchId = url.searchParams.get('v');
+      if (watchId) return watchId;
+      const activePlayer = findPlayer();
+      const responseId = state.pagePlayerResponse?.videoDetails?.videoId || activePlayer?.getPlayerResponse?.()?.videoDetails?.videoId || '';
+      return responseId || '';
     } catch (_error) {
       return '';
     }
@@ -574,9 +918,15 @@
     } else {
       overlay.classList.remove('ytbbi-dragged', 'ytbbi-dragging');
       overlay.style.left = '50%';
-      overlay.style.top = 'auto';
-      overlay.style.bottom = 'var(--ytbbi-bottom)';
-      overlay.style.transform = 'translateX(-50%)';
+      if (isShortsPage() && updateShortsLayoutMode()) {
+        overlay.style.top = '43%';
+        overlay.style.bottom = 'auto';
+        overlay.style.transform = 'translate(-50%, -50%)';
+      } else {
+        overlay.style.top = 'auto';
+        overlay.style.bottom = 'var(--ytbbi-bottom)';
+        overlay.style.transform = 'translateX(-50%)';
+      }
     }
   };
 
@@ -658,7 +1008,7 @@
     });
   };
 
-  const getVideoElement = () => document.querySelector('video');
+  const getVideoElement = () => selectActiveVideoElement();
 
   const getVideoCurrentMs = () => {
     const video = getVideoElement();
@@ -693,6 +1043,7 @@
     state.transcriptSeq += 1;
     state.transcriptCues = [];
     state.transcriptRawCues = [];
+    state.transcriptVideoId = '';
     state.transcriptTrackLang = '';
     state.transcriptIsAuto = false;
     state.currentStableCaptionKey = '';
@@ -726,6 +1077,16 @@
     }
   };
 
+  const syncPageBridgeState = (active = isSupportedVideoPage()) => {
+    if (active && !state.bridgeInstalled) installPageBridge();
+    if (!state.bridgeInstalled) return;
+    try {
+      window.postMessage({ type: 'YTBBI_CONTENT_SET_BRIDGE_ACTIVE', active: !!active }, '*');
+    } catch (error) {
+      log('bridge active sync failed', error);
+    }
+  };
+
   const installPageBridge = () => {
     if (state.bridgeInstalled) return;
     state.bridgeInstalled = true;
@@ -737,11 +1098,21 @@
       if (!String(message.type || '').startsWith('YTBBI_BRIDGE_')) return;
 
       if (message.type === 'YTBBI_BRIDGE_PLAYER_DATA') {
-        if (message.playerResponse) state.pagePlayerResponse = cloneJson(message.playerResponse);
-        if (message.selectedTrack) state.pageSelectedTrack = cloneJson(message.selectedTrack);
-        if (message.audioTrack) state.pageAudioTrack = cloneJson(message.audioTrack);
+        const previousVideoId = state.pageVideoId;
+        const previousSelectedKey = state.pageSelectedTrack?.baseUrl || '';
+        state.pageVideoId = normalizeText(message.videoId || message.playerResponse?.videoDetails?.videoId || '');
+        state.pagePlayerResponse = message.playerResponse ? cloneJson(message.playerResponse) : null;
+        state.pageSelectedTrack = message.selectedTrack ? cloneJson(message.selectedTrack) : null;
+        state.pageAudioTrack = message.audioTrack ? cloneJson(message.audioTrack) : null;
+
+        const selectedKey = state.pageSelectedTrack?.baseUrl || '';
+        if ((state.pageVideoId && previousVideoId && state.pageVideoId !== previousVideoId) || selectedKey !== previousSelectedKey) {
+          scheduleCaptionRead();
+        }
+
         if (message.requestId && state.bridgeRequests.has(message.requestId)) {
           state.bridgeRequests.get(message.requestId)({
+            videoId: state.pageVideoId,
             playerResponse: state.pagePlayerResponse,
             selectedTrack: state.pageSelectedTrack,
             audioTrack: state.pageAudioTrack
@@ -765,14 +1136,17 @@
     } catch (error) {
       log('page bridge injection failed', error);
     }
+
+    syncPageBridgeState(true);
   };
 
   const requestPagePlayerData = () => new Promise((resolve) => {
+    if (!state.bridgeInstalled && isSupportedVideoPage()) installPageBridge();
     const requestId = `req-${Date.now()}-${++state.bridgeRequestSeq}`;
     const timer = setTimeout(() => {
       if (state.bridgeRequests.has(requestId)) {
         state.bridgeRequests.delete(requestId);
-        resolve({ playerResponse: state.pagePlayerResponse, selectedTrack: state.pageSelectedTrack, audioTrack: state.pageAudioTrack });
+        resolve({ videoId: state.pageVideoId, playerResponse: state.pagePlayerResponse, selectedTrack: state.pageSelectedTrack, audioTrack: state.pageAudioTrack });
       }
     }, 800);
     state.bridgeRequests.set(requestId, (data) => {
@@ -867,12 +1241,12 @@
   };
 
   const getInitialPlayerResponse = () => {
-    if (state.pagePlayerResponse?.captions) return cloneJson(state.pagePlayerResponse);
+    if (state.pagePlayerResponse?.captions && responseMatchesCurrentVideo(state.pagePlayerResponse)) return cloneJson(state.pagePlayerResponse);
 
     try {
       const pageWindow = window.wrappedJSObject || window;
       const direct = pageWindow.ytInitialPlayerResponse;
-      if (direct?.captions) return cloneJson(direct);
+      if (direct?.captions && responseMatchesCurrentVideo(direct)) return cloneJson(direct);
     } catch (_error) {
       // Content scripts may not be allowed to read page globals; script parsing below is the fallback.
     }
@@ -882,7 +1256,7 @@
       const rawPlayerResponse = pageWindow.ytplayer?.config?.args?.raw_player_response;
       if (rawPlayerResponse) {
         const parsed = typeof rawPlayerResponse === 'string' ? JSON.parse(rawPlayerResponse) : rawPlayerResponse;
-        if (parsed?.captions) return cloneJson(parsed);
+        if (parsed?.captions && responseMatchesCurrentVideo(parsed)) return cloneJson(parsed);
       }
     } catch (_error) {
       // Some YouTube layouts expose caption tracks through ytplayer config instead of ytInitialPlayerResponse.
@@ -893,7 +1267,7 @@
       const text = script.textContent || '';
       if (!text.includes('ytInitialPlayerResponse')) continue;
       const response = extractJsonObjectAfterMarker(text, 'ytInitialPlayerResponse');
-      if (response?.captions) return response;
+      if (response?.captions && responseMatchesCurrentVideo(response)) return response;
     }
     return null;
   };
@@ -902,7 +1276,7 @@
     const response = getInitialPlayerResponse();
     const tracks = response?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
     const list = Array.isArray(tracks) ? tracks.filter((track) => track?.baseUrl) : [];
-    if (state.pageSelectedTrack?.baseUrl && !list.some((track) => track.baseUrl === state.pageSelectedTrack.baseUrl)) {
+    if (hasPageSelectedTrackForCurrentVideo() && !list.some((track) => track.baseUrl === state.pageSelectedTrack.baseUrl)) {
       list.unshift(state.pageSelectedTrack);
     }
     return list;
@@ -910,7 +1284,7 @@
 
   const chooseCaptionTrack = (tracks, captionText) => {
     if (!tracks.length) return null;
-    if (state.pageSelectedTrack?.baseUrl) {
+    if (hasPageSelectedTrackForCurrentVideo()) {
       const selected = tracks.find((track) => track.baseUrl === state.pageSelectedTrack.baseUrl) || state.pageSelectedTrack;
       if (selected?.baseUrl) return selected;
     }
@@ -1239,6 +1613,7 @@
   const ensureTranscriptForCurrentVideo = async (captionText = '') => {
     const videoId = getVideoId();
     if (!videoId) return;
+    if (state.transcriptVideoId && state.transcriptVideoId !== videoId) resetTranscriptState();
 
     const detected = detectCaptionLanguage(captionText || state.lastCaptionText);
     const requestedKey = `${videoId}|${detected}`;
@@ -1261,6 +1636,7 @@
     try {
       const fetched = await fetchTranscriptCues(track);
       if (seq !== state.transcriptSeq) return;
+      if (getVideoId() && getVideoId() !== videoId) return;
       const rawCues = fetched.rawCues || [];
       const trackName = normalizeText(track.name?.simpleText || track.name?.runs?.map((run) => run.text).join('') || '');
       const isAutoTrack = track.kind === 'asr' || /auto|自動|自動產生|automatic|generated|asr/i.test(`${trackName} ${fetched.format || ''}`);
@@ -1271,6 +1647,7 @@
       );
       state.transcriptKey = requestedKey;
       state.transcriptLoadingKey = '';
+      state.transcriptVideoId = videoId;
       state.transcriptRawCues = rawCues;
       state.transcriptCues = cues;
       state.transcriptTrackLang = track.languageCode || detected || 'auto';
@@ -1666,6 +2043,8 @@
 
   const getStableTranscriptCaption = (visibleText = '') => {
     if (!state.settings.transcriptFirstMode && !state.settings.stableAutoCaptions) return '';
+    const videoId = getVideoId();
+    if (state.transcriptVideoId && videoId && state.transcriptVideoId !== videoId) return '';
     if (!state.transcriptCues.length) return '';
 
     const index = findCurrentCueIndex(visibleText);
@@ -1741,8 +2120,21 @@
   };
 
   const handleCaptionChange = () => {
+    if (!isSupportedVideoPage()) {
+      deactivateForUnsupportedPage();
+      return;
+    }
     if (!state.settings.enabled) {
       hideOverlay();
+      return;
+    }
+
+    syncActiveVideoContext();
+    const currentVideoId = getVideoId();
+    if (state.transcriptVideoId && currentVideoId && state.transcriptVideoId !== currentVideoId) resetTranscriptState();
+
+    if (shouldBlockOverlayBecauseNativeCaptionsOff()) {
+      clearCaptionDisplayState();
       return;
     }
 
@@ -1963,6 +2355,10 @@
 
   const scheduleCaptionRead = () => {
     clearTimeout(state.textTimer);
+    if (!isSupportedVideoPage()) {
+      deactivateForUnsupportedPage();
+      return;
+    }
     state.textTimer = setTimeout(handleCaptionChange, 80);
   };
 
@@ -1987,15 +2383,54 @@
       ? mutation.target.parentElement
       : mutation.target;
     if (!target?.closest) return false;
-    if (target.closest('.ytp-right-controls, .ytp-chrome-controls')) return true;
+    if (target.closest('.ytp-right-controls, .ytp-chrome-controls, ytd-shorts-player-controls, .player-controls, ytd-reel-player-overlay-renderer')) return true;
     for (const node of mutation.addedNodes || []) {
       if (node.nodeType !== Node.ELEMENT_NODE) continue;
-      if (node.matches?.('.ytp-right-controls, .ytp-chrome-controls') ||
-          node.querySelector?.('.ytp-right-controls, .ytp-chrome-controls')) {
+      if (node.matches?.('.ytp-right-controls, .ytp-chrome-controls, ytd-shorts-player-controls, .player-controls, ytd-reel-player-overlay-renderer') ||
+          node.querySelector?.('.ytp-right-controls, .ytp-chrome-controls, ytd-shorts-player-controls, .player-controls, ytd-reel-player-overlay-renderer')) {
         return true;
       }
     }
     return false;
+  };
+
+  const syncActiveVideoContext = () => {
+    if (!isSupportedVideoPage()) {
+      deactivateForUnsupportedPage();
+      return false;
+    }
+    const videoId = getVideoId();
+    const player = findPlayer();
+    const playerChanged = !!(player && state.activePlayerElement && player !== state.activePlayerElement);
+    const videoChanged = !!(videoId && state.activeVideoId && videoId !== state.activeVideoId);
+
+    if (!state.activeVideoId && videoId) state.activeVideoId = videoId;
+    if (!state.activePlayerElement && player) state.activePlayerElement = player;
+
+    if (!playerChanged && !videoChanged) return false;
+
+    if (videoChanged) {
+      state.nativeCaptionUserDisabledVideoId = '';
+      state.nativeCaptionStateVideoId = videoId || '';
+      state.lastKnownNativeCaptionActive = false;
+    }
+
+    state.activeVideoId = videoId || state.activeVideoId;
+    state.activePlayerElement = player || state.activePlayerElement;
+    state.lastCaptionText = '';
+    state.lastTranslatedText = '';
+    state.requestSeq += 1;
+    resetTranscriptState();
+    state.pageVideoId = '';
+    state.pageSelectedTrack = null;
+    state.pagePlayerResponse = null;
+    resetVisibleBufferState();
+    closeLookupPopover();
+    ensureOverlay();
+    schedulePlayerToggleEnsure(120);
+    applyOverlayPositionForCurrentVideo();
+    scheduleCaptionRead();
+    return true;
   };
 
   const startObserver = () => {
@@ -2013,10 +2448,22 @@
         state.lastTranslatedText = '';
         state.requestSeq += 1;
         resetTranscriptState();
+        state.pageVideoId = '';
+        state.pageSelectedTrack = null;
+        state.pagePlayerResponse = null;
+        if (!isSupportedVideoPage()) {
+          deactivateForUnsupportedPage();
+          return;
+        }
+        state.activeVideoId = getVideoId();
+        state.activePlayerElement = findPlayer();
+        syncPageBridgeState(true);
         closeLookupPopover();
         ensureOverlay();
         applyOverlayPositionForCurrentVideo();
       }
+
+      if (!isSupportedVideoPage()) return;
 
       for (const mutation of mutations) {
         if (!captionChanged && isCaptionMutation(mutation)) captionChanged = true;
@@ -2025,6 +2472,7 @@
       }
 
       if (routeChanged || controlsChanged) schedulePlayerToggleEnsure(routeChanged ? 100 : 450);
+      if (routeChanged) refreshPagePlayerDataSoon();
       if (captionChanged) scheduleCaptionRead();
     });
 
@@ -2045,9 +2493,20 @@
         state.lastTranslatedText = '';
         state.requestSeq += 1;
         resetTranscriptState();
+        state.pageVideoId = '';
+        state.pageSelectedTrack = null;
+        state.pagePlayerResponse = null;
+        if (!isSupportedVideoPage()) {
+          deactivateForUnsupportedPage();
+          return;
+        }
+        state.activeVideoId = getVideoId();
+        state.activePlayerElement = findPlayer();
+        syncPageBridgeState(true);
         closeLookupPopover();
         ensureOverlay();
         schedulePlayerToggleEnsure(100);
+        refreshPagePlayerDataSoon();
         applyOverlayPositionForCurrentVideo();
         scheduleCaptionRead();
       }
@@ -2056,6 +2515,15 @@
 
 
   const installVideoEventListeners = () => {
+    if (!isSupportedVideoPage()) {
+      if (state.videoEventTarget && state.videoEventHandler) {
+        ['play', 'playing', 'pause', 'seeked', 'seeking', 'timeupdate', 'ratechange'].forEach((eventName) => {
+          state.videoEventTarget.removeEventListener(eventName, state.videoEventHandler, true);
+        });
+      }
+      state.videoEventTarget = null;
+      return;
+    }
     const video = getVideoElement();
     if (!video || state.videoEventTarget === video) return;
     if (state.videoEventTarget) {
@@ -2088,9 +2556,18 @@
   const startPlaybackWatcher = () => {
     clearInterval(state.playbackTimer);
     state.playbackTimer = setInterval(() => {
+      if (!isSupportedVideoPage()) {
+        deactivateForUnsupportedPage();
+        return;
+      }
       if (!state.playerToggleButton || !state.playerToggleButton.isConnected) schedulePlayerToggleEnsure(100);
       installVideoEventListeners();
+      syncActiveVideoContext();
       if (!state.settings.enabled) return;
+      if (shouldBlockOverlayBecauseNativeCaptionsOff()) {
+        clearCaptionDisplayState();
+        return;
+      }
       if (isVideoPaused()) return;
       if (!state.transcriptCues.length) {
         ensureTranscriptForCurrentVideo(state.lastCaptionText || getVisibleCaptionText() || '').catch((error) => log('timedtext load failed', error));
@@ -2103,6 +2580,12 @@
 
   const onSettingsChanged = async () => {
     state.settings = await storageGet();
+    if (!isSupportedVideoPage()) {
+      applySettingsToDom();
+      deactivateForUnsupportedPage();
+      return;
+    }
+    syncPageBridgeState(true);
     ensurePlayerToggle();
     applySettingsToDom();
     state.lastCaptionText = '';
@@ -2141,6 +2624,13 @@
       if (event.target?.classList?.contains('ytbbi-word')) return;
       closeLookupPopover();
     }, true);
+
+    window.addEventListener('resize', () => {
+      if (!isSupportedVideoPage()) return;
+      applySettingsToDom();
+      applyOverlayPositionForCurrentVideo();
+      schedulePlayerToggleEnsure(120);
+    }, { passive: true });
   };
 
   const init = async () => {
@@ -2149,15 +2639,25 @@
 
     state.initialized = true;
     state.settings = await storageGet();
-    installPageBridge();
+    startObserver();
+    startRouteWatcher();
+    startPlaybackWatcher();
+    installMessageListener();
+
+    if (!isSupportedVideoPage()) {
+      applySettingsToDom();
+      deactivateForUnsupportedPage();
+      log('initialized on non-video page', state.settings);
+      return;
+    }
+
+    state.activeVideoId = getVideoId();
+    state.activePlayerElement = findPlayer();
+    syncPageBridgeState(true);
     ensureOverlay();
     ensurePlayerToggle();
     applyOverlayPositionForCurrentVideo();
-    startObserver();
-    startRouteWatcher();
     installVideoEventListeners();
-    startPlaybackWatcher();
-    installMessageListener();
     ensureTranscriptForCurrentVideo('').catch((error) => log('timedtext init failed', error));
     scheduleCaptionRead();
     log('initialized', state.settings);

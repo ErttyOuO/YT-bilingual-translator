@@ -134,6 +134,8 @@
         <label class="check"><input id="showOriginal" type="checkbox" /> <span data-i18n="showOriginal">顯示原文</span></label>
         <label class="check"><input id="showTranslation" type="checkbox" /> <span data-i18n="showTranslation">顯示翻譯</span></label>
         <label class="check"><input id="hideNativeCaptions" type="checkbox" /> <span data-i18n="hideNativeCaptions">隱藏 YouTube 原字幕</span></label>
+        <label class="check full"><input id="requireNativeCaptions" type="checkbox" /> <span data-i18n="requireNativeCaptions">只在 YouTube CC 字幕啟用時顯示外掛字幕</span></label>
+        <label class="check full"><input id="autoEnableNativeCaptions" type="checkbox" /> <span data-i18n="autoEnableNativeCaptions">開啟外掛字幕時自動啟用 YouTube CC</span></label>
         <label class="check"><input id="stableAutoCaptions" type="checkbox" /> <span data-i18n="stableAutoCaptions">自動字幕穩定分段</span></label>
         <label class="check full"><input id="transcriptFirstMode" type="checkbox" /> <span data-i18n="transcriptFirstMode">優先使用完整字幕資料，不依賴畫面字幕跳字</span></label>
       </section>
@@ -141,7 +143,7 @@
         <h2 data-i18n="appearanceSection">字幕外觀</h2>
         <label class="range"><span><span data-i18n="fontSize">字幕大小</span> <b id="fontSizeLabel"></b></span><input id="fontSize" type="range" min="12" max="34" step="1" /></label>
         <label class="range"><span><span data-i18n="bottomPercent">字幕高度</span> <b id="bottomPercentLabel"></b></span><input id="bottomPercent" type="range" min="5" max="40" step="1" /></label>
-        <label class="range"><span><span data-i18n="maxWidthPercent">字幕寬度</span> <b id="maxWidthPercentLabel"></b></span><input id="maxWidthPercent" type="range" min="60" max="98" step="1" /></label>
+        <label class="range"><span><span data-i18n="maxWidthPercent">字幕寬度</span> <b id="maxWidthPercentLabel"></b></span><input id="maxWidthPercent" type="range" min="60" max="100" step="1" /></label>
       </section>
     </section>
 

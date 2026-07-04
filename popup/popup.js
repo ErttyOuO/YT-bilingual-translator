@@ -10,9 +10,11 @@
     showOriginal: true,
     showTranslation: true,
     hideNativeCaptions: true,
+    requireNativeCaptions: true,
+    autoEnableNativeCaptions: false,
     fontSize: 18,
     bottomPercent: 12,
-    maxWidthPercent: 86,
+    maxWidthPercent: 92,
     sourceLang: 'auto',
     debug: false,
     translationProvider: 'auto-free',
@@ -104,6 +106,8 @@
     'showOriginal',
     'showTranslation',
     'hideNativeCaptions',
+    'requireNativeCaptions',
+    'autoEnableNativeCaptions',
     'stableAutoCaptions',
     'transcriptFirstMode',
     'interactiveLookup',
@@ -196,6 +200,8 @@
     showOriginal: $('showOriginal').checked,
     showTranslation: $('showTranslation').checked,
     hideNativeCaptions: $('enabled').checked,
+    requireNativeCaptions: $('requireNativeCaptions') ? $('requireNativeCaptions').checked : true,
+    autoEnableNativeCaptions: $('autoEnableNativeCaptions') ? $('autoEnableNativeCaptions').checked : false,
     stableAutoCaptions: $('stableAutoCaptions').checked,
     transcriptFirstMode: $('transcriptFirstMode') ? $('transcriptFirstMode').checked : true,
     interactiveLookup: $('interactiveLookup').checked,
@@ -227,6 +233,8 @@
     $('showTranslation').checked = !!settings.showTranslation;
     $('hideNativeCaptions').checked = !!settings.enabled;
     $('hideNativeCaptions').disabled = true;
+    if ($('requireNativeCaptions')) $('requireNativeCaptions').checked = settings.requireNativeCaptions !== false;
+    if ($('autoEnableNativeCaptions')) $('autoEnableNativeCaptions').checked = !!settings.autoEnableNativeCaptions;
     $('stableAutoCaptions').checked = settings.stableAutoCaptions !== false;
     if ($('transcriptFirstMode')) $('transcriptFirstMode').checked = settings.transcriptFirstMode !== false;
     $('interactiveLookup').checked = !!settings.interactiveLookup;

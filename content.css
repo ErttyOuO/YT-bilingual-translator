@@ -1,7 +1,7 @@
 :root {
   --ytbbi-font-size: 18px;
   --ytbbi-bottom: 12%;
-  --ytbbi-max-width: 86%;
+  --ytbbi-max-width: 92%;
 }
 
 .ytbbi-overlay {
@@ -10,8 +10,8 @@
   bottom: var(--ytbbi-bottom);
   transform: translateX(-50%);
   z-index: 2147483646;
-  max-width: var(--ytbbi-max-width);
-  width: max-content;
+  width: min(var(--ytbbi-max-width), calc(100% - 32px));
+  max-width: calc(100% - 32px);
   box-sizing: border-box;
   pointer-events: none;
   text-align: center;
@@ -30,6 +30,7 @@
   display: inline-flex;
   flex-direction: column;
   gap: 4px;
+  width: fit-content;
   padding: 8px 14px;
   border-radius: 12px;
   background: rgba(0, 0, 0, 0.64);
@@ -43,7 +44,9 @@
 .ytbbi-original,
 .ytbbi-translation {
   display: block;
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
+  word-break: normal;
+  text-wrap: initial;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95);
 }
 
@@ -269,6 +272,30 @@
   }
 }
 
+
+html.ytbbi-shorts-mode .ytbbi-overlay {
+  bottom: max(16%, 92px);
+  max-width: min(var(--ytbbi-max-width), 360px, calc(100vw - 32px));
+}
+
+html.ytbbi-shorts-mode .ytbbi-card {
+  padding: 7px 11px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.62);
+}
+
+html.ytbbi-shorts-mode .ytbbi-original {
+  font-size: calc(var(--ytbbi-font-size) * 0.86);
+}
+
+html.ytbbi-shorts-mode .ytbbi-translation {
+  font-size: calc(var(--ytbbi-font-size) * 0.96);
+}
+
+html.ytbbi-shorts-mode .ytbbi-popover {
+  max-width: min(360px, calc(100vw - 24px));
+}
+
 .ytbbi-drag-handle {
   position: absolute;
   top: -9px;
@@ -440,4 +467,58 @@
     transition: none !important;
     transform: none !important;
   }
+}
+
+
+/* v0.37 Shorts control bar and compact layout */
+html.ytbbi-shorts-mode #right-controls,
+html.ytbbi-shorts-mode ytd-shorts-player-controls #right-controls {
+  width: auto !important;
+  min-width: max-content !important;
+  padding-inline: 8px !important;
+  column-gap: 2px;
+}
+
+html.ytbbi-shorts-mode #closed-captioning-button-container,
+html.ytbbi-shorts-mode ytm-closed-captioning-button {
+  display: inline-flex !important;
+  align-items: center !important;
+  width: auto !important;
+  min-width: max-content !important;
+}
+
+html.ytbbi-shorts-mode #closed-captioning-button-container .ytbbi-player-toggle,
+html.ytbbi-shorts-mode ytm-closed-captioning-button .ytbbi-player-toggle {
+  width: 32px !important;
+  min-width: 32px !important;
+  height: 32px !important;
+  margin-inline: 2px !important;
+}
+
+html.ytbbi-shorts-mode #closed-captioning-button-container .ytbbi-player-toggle-icon,
+html.ytbbi-shorts-mode ytm-closed-captioning-button .ytbbi-player-toggle-icon {
+  width: 24px;
+  height: 24px;
+}
+
+html.ytbbi-shorts-compact-layout .ytbbi-overlay {
+  width: min(86%, 360px, calc(100% - 36px));
+  max-width: min(86%, 360px, calc(100% - 36px));
+}
+
+html.ytbbi-shorts-compact-layout .ytbbi-card {
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.58);
+}
+
+html.ytbbi-shorts-compact-layout .ytbbi-original {
+  font-size: calc(var(--ytbbi-font-size) * 0.8);
+}
+
+html.ytbbi-shorts-compact-layout .ytbbi-translation {
+  font-size: calc(var(--ytbbi-font-size) * 0.9);
+}
+
+html.ytbbi-shorts-mode .ytbbi-overlay {
+  z-index: 2147483644;
 }
