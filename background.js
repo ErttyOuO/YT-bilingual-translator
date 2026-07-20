@@ -58,11 +58,13 @@
   const wordImageCache = new Map();
   const providerState = new Map();
   const providerQueues = new Map();
+  const prefetchInflightTranslate = new Map();
   const prefetchBatchInflight = new Map();
   const prefetchBatchQueue = [];
   let prefetchBatchTimer = 0;
   let microsoftToken = '';
   let microsoftTokenExpiresAt = 0;
+  const microsoftTokenInflight = { foreground: null, prefetch: null };
 
   const log = (...args) => console.log(`[${EXT_NAME}]`, ...args);
 
@@ -166,34 +168,61 @@
     state.cooldownUntil = now() + cooldown;
   };
 
-  const runQueued = (provider, task) => {
-    const previous = providerQueues.get(provider) || Promise.resolve();
+  const getProviderQueues = (provider) => {
+    if (!providerQueues.has(provider)) {
+      providerQueues.set(provider, { prefetch: Promise.resolve() });
+    }
+    return providerQueues.get(provider);
+  };
+
+  const reserveProviderStart = async (provider) => {
+    const config = PROVIDERS[provider] || PROVIDERS['google-free'];
+    const state = getProviderState(provider);
+    const startAt = Math.max(now(), state.nextAllowedAt || 0);
+    state.nextAllowedAt = startAt + (config.delayMs || 700);
+    const waitMs = Math.max(0, startAt - now());
+    if (waitMs) await sleep(waitMs);
+  };
+
+  const runQueued = (provider, task, priority = 'foreground') => {
+    if (priority !== 'prefetch') {
+      // Foreground captions are start-throttled but are not placed behind
+      // older network requests. This prevents stale captions from forming a
+      // FIFO backlog while the video keeps playing.
+      return reserveProviderStart(provider).then(task);
+    }
+
+    // Prefetch remains strictly sequential. It may run concurrently with a
+    // foreground request, but it can never make the visible caption wait.
+    const queues = getProviderQueues(provider);
+    const previous = queues.prefetch || Promise.resolve();
     const next = previous.catch(() => undefined).then(async () => {
-      const config = PROVIDERS[provider] || PROVIDERS['google-free'];
-      const state = getProviderState(provider);
-      const waitMs = Math.max(0, state.nextAllowedAt - now());
-      if (waitMs) await sleep(waitMs);
-      state.nextAllowedAt = now() + (config.delayMs || 700);
+      await reserveProviderStart(provider);
       return task();
     });
-    providerQueues.set(provider, next.catch(() => undefined));
+    queues.prefetch = next.catch(() => undefined);
     return next;
   };
 
-  const fetchWithTimeout = async (provider, url, options = {}) => {
-    const config = PROVIDERS[provider] || PROVIDERS['google-free'];
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), config.timeoutMs || 10000);
-    try {
-      return await runQueued(provider, () => fetch(url, { ...options, signal: controller.signal }));
-    } catch (error) {
-      if (error?.name === 'AbortError') {
-        throw new ProviderError(provider, `${provider} timeout`, 0);
+  const fetchWithTimeout = (provider, url, options = {}, priority = 'foreground') => {
+    return runQueued(provider, async () => {
+      const config = PROVIDERS[provider] || PROVIDERS['google-free'];
+      const controller = new AbortController();
+      const timeoutMs = priority === 'foreground'
+        ? Math.min(config.timeoutMs || 10000, 5500)
+        : (config.timeoutMs || 10000);
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        return await fetch(url, { ...options, signal: controller.signal });
+      } catch (error) {
+        if (error?.name === 'AbortError') {
+          throw new ProviderError(provider, `${provider} timeout`, 0);
+        }
+        throw new ProviderError(provider, error?.message || String(error), 0);
+      } finally {
+        clearTimeout(timer);
       }
-      throw new ProviderError(provider, error?.message || String(error), 0);
-    } finally {
-      clearTimeout(timer);
-    }
+    }, priority);
   };
 
   const buildUrl = (base, path) => {
@@ -259,27 +288,39 @@
     return '';
   };
 
-  const getMicrosoftToken = async () => {
+  const getMicrosoftToken = async (priority = 'foreground') => {
     const safeNow = now();
     if (microsoftToken && microsoftTokenExpiresAt > safeNow + 60000) return microsoftToken;
-    const provider = 'microsoft-edge';
-    const response = await fetchWithTimeout(provider, MICROSOFT_AUTH_URL, {
-      method: 'GET',
-      credentials: 'omit',
-      cache: 'no-store'
-    });
-    const token = await response.text().catch(() => '');
-    if (!response.ok || !token) {
-      throw new ProviderError(provider, `Microsoft auth failed: ${response.status}`, response.status);
+    const lane = priority === 'prefetch' ? 'prefetch' : 'foreground';
+    if (microsoftTokenInflight[lane]) return microsoftTokenInflight[lane];
+
+    const task = (async () => {
+      const provider = 'microsoft-edge';
+      const response = await fetchWithTimeout(provider, MICROSOFT_AUTH_URL, {
+        method: 'GET',
+        credentials: 'omit',
+        cache: 'no-store'
+      }, priority);
+      const token = await response.text().catch(() => '');
+      if (!response.ok || !token) {
+        throw new ProviderError(provider, `Microsoft auth failed: ${response.status}`, response.status);
+      }
+      microsoftToken = token.trim();
+      microsoftTokenExpiresAt = now() + 8 * 60 * 1000;
+      return microsoftToken;
+    })();
+
+    microsoftTokenInflight[lane] = task;
+    try {
+      return await task;
+    } finally {
+      if (microsoftTokenInflight[lane] === task) microsoftTokenInflight[lane] = null;
     }
-    microsoftToken = token.trim();
-    microsoftTokenExpiresAt = safeNow + 8 * 60 * 1000;
-    return microsoftToken;
   };
 
-  const translateViaMicrosoftEdge = async ({ text, sourceLang, targetLang }) => {
+  const translateViaMicrosoftEdge = async ({ text, sourceLang, targetLang, priority = 'foreground' }) => {
     const provider = 'microsoft-edge';
-    const token = await getMicrosoftToken();
+    const token = await getMicrosoftToken(priority);
     const source = sourceLang && sourceLang !== 'auto' ? providerLanguage(provider, sourceLang) : '';
     const target = providerLanguage(provider, targetLang || 'zh-TW');
     const params = new URLSearchParams({ 'api-version': '3.0', to: target, includeSentenceLength: 'true', textType: 'html' });
@@ -294,7 +335,7 @@
       body: JSON.stringify([{ Text: text }]),
       credentials: 'omit',
       cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => null);
     if (!response.ok) throw new ProviderError(provider, `Microsoft Edge Translate failed: ${response.status}`, response.status);
     const translated = data?.[0]?.translations?.[0]?.text;
@@ -302,14 +343,14 @@
     return normalizeText(decodeHtml(translated));
   };
 
-  const translateViaGoogleFree = async ({ text, sourceLang, targetLang }) => {
+  const translateViaGoogleFree = async ({ text, sourceLang, targetLang, priority = 'foreground' }) => {
     const provider = 'google-free';
     const source = sourceLang && sourceLang !== 'auto' ? sourceLang : 'auto';
     const target = targetLang || 'zh-TW';
     const params = new URLSearchParams({ client: 'gtx', sl: source, tl: target, dt: 't', q: text });
     const response = await fetchWithTimeout(provider, `https://translate.googleapis.com/translate_a/single?${params.toString()}`, {
       method: 'GET', credentials: 'omit', cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => null);
     if (!response.ok || !Array.isArray(data)) {
       throw new ProviderError(provider, `Google Free Translate failed: ${response.status}`, response.status);
@@ -319,14 +360,14 @@
     return translated;
   };
 
-  const translateViaGoogleDict = async ({ text, sourceLang, targetLang }) => {
+  const translateViaGoogleDict = async ({ text, sourceLang, targetLang, priority = 'foreground' }) => {
     const provider = 'google-dict';
     const source = sourceLang && sourceLang !== 'auto' ? sourceLang : 'auto';
     const target = targetLang || 'zh-TW';
     const params = new URLSearchParams({ client: 'dict-chrome-ex', sl: source, tl: target, q: text });
     const response = await fetchWithTimeout(provider, `https://clients5.google.com/translate_a/t?${params.toString()}`, {
       method: 'GET', credentials: 'omit', cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => null);
     if (!response.ok || data == null) {
       throw new ProviderError(provider, `Google Dictionary endpoint failed: ${response.status}`, response.status);
@@ -336,7 +377,7 @@
     return translated;
   };
 
-  const translateViaLibreTranslate = async ({ text, sourceLang, targetLang, settings }) => {
+  const translateViaLibreTranslate = async ({ text, sourceLang, targetLang, settings, priority = 'foreground' }) => {
     const provider = 'libretranslate';
     const baseUrl = settings.libreTranslateUrl || 'https://libretranslate.com';
     const source = sourceLang && sourceLang !== 'auto' ? providerLanguage(provider, sourceLang) : 'auto';
@@ -346,7 +387,7 @@
 
     const response = await fetchWithTimeout(provider, buildUrl(baseUrl, '/translate'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), credentials: 'omit', cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const message = data?.error || data?.message || `LibreTranslate failed: ${response.status}`;
@@ -357,13 +398,13 @@
     return normalizeText(decodeHtml(translated));
   };
 
-  const translateViaLingva = async ({ text, sourceLang, targetLang, settings }) => {
+  const translateViaLingva = async ({ text, sourceLang, targetLang, settings, priority = 'foreground' }) => {
     const provider = 'lingva';
     const baseUrl = settings.lingvaInstanceUrl || 'https://lingva.ml';
     const source = sourceLang && sourceLang !== 'auto' ? providerLanguage(provider, sourceLang) : 'auto';
     const target = providerLanguage(provider, targetLang || settings.targetLang || 'zh-TW');
     const endpoint = buildUrl(baseUrl, `/api/v1/${encodeURIComponent(source)}/${encodeURIComponent(target)}/${encodeURIComponent(text)}`);
-    const response = await fetchWithTimeout(provider, endpoint, { method: 'GET', credentials: 'omit', cache: 'no-store' });
+    const response = await fetchWithTimeout(provider, endpoint, { method: 'GET', credentials: 'omit', cache: 'no-store' }, priority);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const message = data?.error || data?.message || `Lingva failed: ${response.status}`;
@@ -374,14 +415,14 @@
     return normalizeText(decodeHtml(translated));
   };
 
-  const translateViaMyMemory = async ({ text, sourceLang, targetLang }) => {
+  const translateViaMyMemory = async ({ text, sourceLang, targetLang, priority = 'foreground' }) => {
     const provider = 'mymemory';
     const source = providerLanguage(provider, guessSourceLang(text, sourceLang));
     const target = providerLanguage(provider, targetLang || 'zh-TW');
     const params = new URLSearchParams({ q: text, langpair: `${source}|${target}` });
     const response = await fetchWithTimeout(provider, `https://api.mymemory.translated.net/get?${params.toString()}`, {
       method: 'GET', credentials: 'omit', cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new ProviderError(provider, data?.responseDetails || `MyMemory failed: ${response.status}`, response.status);
@@ -391,7 +432,7 @@
     return normalizeText(decodeHtml(translated));
   };
 
-  const translateViaCloudV2 = async ({ text, sourceLang, targetLang, settings }) => {
+  const translateViaCloudV2 = async ({ text, sourceLang, targetLang, settings, priority = 'foreground' }) => {
     const provider = 'cloud-v2';
     const apiKey = String(settings.googleCloudApiKey || '').trim();
     if (!apiKey) throw new ProviderError(provider, 'NO_GOOGLE_CLOUD_API_KEY', 0);
@@ -403,7 +444,7 @@
     if (source && source !== 'auto') body.set('source', source);
     const response = await fetchWithTimeout(provider, `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(apiKey)}`, {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: body.toString(), credentials: 'omit', cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const message = data?.error?.message || `Cloud Translation API v2 failed: ${response.status}`;
@@ -414,7 +455,7 @@
     return normalizeText(decodeHtml(translated));
   };
 
-  const translateViaCloudV3Proxy = async ({ text, sourceLang, targetLang, settings }) => {
+  const translateViaCloudV3Proxy = async ({ text, sourceLang, targetLang, settings, priority = 'foreground' }) => {
     const provider = 'cloud-v3-proxy';
     const proxyUrl = String(settings.cloudV3ProxyUrl || '').trim();
     if (!proxyUrl) throw new ProviderError(provider, 'NO_CLOUD_V3_PROXY_URL', 0);
@@ -423,7 +464,7 @@
     if (source && source !== 'auto') payload.sourceLanguageCode = source;
     const response = await fetchWithTimeout(provider, proxyUrl, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), credentials: 'omit', cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const message = data?.error?.message || data?.error || `Cloud Translation API v3 proxy failed: ${response.status}`;
@@ -478,20 +519,26 @@
     throw lastError;
   };
 
-  const translateUsingProviders = async ({ normalized, sourceLang, targetLang, settings }) => {
+  const translateUsingProviders = async ({ normalized, sourceLang, targetLang, settings, priority = 'foreground' }) => {
     const order = getProviderOrder(settings);
     const errors = [];
     const activeProviders = order.filter((provider) => !isProviderCoolingDown(provider));
-    const providersToTry = activeProviders.length ? activeProviders : order;
+    const allProvidersToTry = activeProviders.length ? activeProviders : order;
+    const providersToTry = priority === 'foreground' ? allProvidersToTry.slice(0, 4) : allProvidersToTry;
+    const startedAt = now();
 
     for (const provider of providersToTry) {
+      if (priority === 'foreground' && now() - startedAt > 12000) break;
       try {
+        // Fast failover is more useful than retrying the same slow endpoint for
+        // live captions. Prefetch can retry later through its own cooldown.
         const translated = await retryProviderTask(provider, () => callProvider(provider, {
           text: normalized,
           sourceLang,
           targetLang,
-          settings
-        }));
+          settings,
+          priority
+        }), 1);
         markProviderSuccess(provider);
         return translated;
       } catch (error) {
@@ -504,7 +551,7 @@
     throw new Error(`All translation providers failed. ${errors.join(' | ')}`);
   };
 
-  const translateText = async ({ text, sourceLang, targetLang, force = false }) => {
+  const translateText = async ({ text, sourceLang, targetLang, force = false, priority = 'foreground' }) => {
     const normalized = normalizeText(text);
     if (!normalized) return '';
     const settings = await getSettings();
@@ -513,19 +560,24 @@
     const cacheKey = makeTranslateCacheKey(src, tgt, normalized);
 
     if (!force && translateCache.has(cacheKey)) return translateCache.get(cacheKey);
-    if (!force && inflightTranslate.has(cacheKey)) return inflightTranslate.get(cacheKey);
+    // Foreground translation deliberately does not wait for a prefetch promise
+    // for the same text. If prefetch is slow, the visible cue gets its own
+    // foreground request and can finish first.
+    if (!force && priority !== 'prefetch' && inflightTranslate.has(cacheKey)) return inflightTranslate.get(cacheKey);
+    if (!force && priority === 'prefetch' && prefetchInflightTranslate.has(cacheKey)) return prefetchInflightTranslate.get(cacheKey);
 
     const task = (async () => {
-      const translated = await translateUsingProviders({ normalized, sourceLang: src, targetLang: tgt, settings });
+      const translated = await translateUsingProviders({ normalized, sourceLang: src, targetLang: tgt, settings, priority });
       cacheSet(translateCache, cacheKey, translated);
       return translated;
     })();
 
-    if (!force) inflightTranslate.set(cacheKey, task);
+    const inflightMap = priority === 'prefetch' ? prefetchInflightTranslate : inflightTranslate;
+    if (!force) inflightMap.set(cacheKey, task);
     try {
       return await task;
     } finally {
-      inflightTranslate.delete(cacheKey);
+      if (inflightMap.get(cacheKey) === task) inflightMap.delete(cacheKey);
     }
   };
 
@@ -592,18 +644,18 @@ ${text}`)
     return result.every(Boolean) ? result : null;
   };
 
-  const translateBatchViaDelimiter = async (provider, { texts, sourceLang, targetLang, settings }) => {
+  const translateBatchViaDelimiter = async (provider, { texts, sourceLang, targetLang, settings, priority = 'prefetch' }) => {
     // Free translation endpoints do not expose a browser-safe native batch API.
     // Use strong numbered markers first because Google/Lingva usually preserve
     // them better than a plain separator. If the provider rewrites/removes the
     // markers, fall back to the older separator strategy and finally to singles.
     const marked = buildMarkedBatchInput(texts);
-    const translatedMarked = await callProvider(provider, { text: marked, sourceLang, targetLang, settings });
+    const translatedMarked = await callProvider(provider, { text: marked, sourceLang, targetLang, settings, priority });
     const markedParts = splitMarkedTranslation(translatedMarked, texts.length);
     if (markedParts) return markedParts;
 
     const joined = texts.join(BATCH_SEPARATOR);
-    const translated = await callProvider(provider, { text: joined, sourceLang, targetLang, settings });
+    const translated = await callProvider(provider, { text: joined, sourceLang, targetLang, settings, priority });
     const parts = splitDelimitedTranslation(translated, texts.length);
     if (!parts) {
       throw new ProviderError(provider, `${PROVIDERS[provider]?.label || provider} batch markers were not preserved.`, 422);
@@ -611,9 +663,9 @@ ${text}`)
     return parts;
   };
 
-  const translateBatchViaMicrosoftEdge = async ({ texts, sourceLang, targetLang }) => {
+  const translateBatchViaMicrosoftEdge = async ({ texts, sourceLang, targetLang, priority = 'prefetch' }) => {
     const provider = 'microsoft-edge';
-    const token = await getMicrosoftToken();
+    const token = await getMicrosoftToken(priority);
     const source = sourceLang && sourceLang !== 'auto' ? providerLanguage(provider, sourceLang) : '';
     const target = providerLanguage(provider, targetLang || 'zh-TW');
     const params = new URLSearchParams({ 'api-version': '3.0', to: target, includeSentenceLength: 'true', textType: 'html' });
@@ -629,7 +681,7 @@ ${text}`)
       body: JSON.stringify(body),
       credentials: 'omit',
       cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => null);
     if (!response.ok) throw new ProviderError(provider, `Microsoft Edge Translate batch failed: ${response.status}`, response.status);
     if (!Array.isArray(data) || data.length !== texts.length) {
@@ -640,7 +692,7 @@ ${text}`)
     return result;
   };
 
-  const translateBatchViaCloudV2 = async ({ texts, sourceLang, targetLang, settings }) => {
+  const translateBatchViaCloudV2 = async ({ texts, sourceLang, targetLang, settings, priority = 'prefetch' }) => {
     const provider = 'cloud-v2';
     const apiKey = String(settings.googleCloudApiKey || '').trim();
     if (!apiKey) throw new ProviderError(provider, 'NO_GOOGLE_CLOUD_API_KEY', 0);
@@ -652,7 +704,7 @@ ${text}`)
     if (source && source !== 'auto') body.set('source', source);
     const response = await fetchWithTimeout(provider, `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(apiKey)}`, {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: body.toString(), credentials: 'omit', cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const message = data?.error?.message || `Cloud Translation API v2 batch failed: ${response.status}`;
@@ -666,7 +718,7 @@ ${text}`)
     return result;
   };
 
-  const translateBatchViaCloudV3Proxy = async ({ texts, sourceLang, targetLang, settings }) => {
+  const translateBatchViaCloudV3Proxy = async ({ texts, sourceLang, targetLang, settings, priority = 'prefetch' }) => {
     const provider = 'cloud-v3-proxy';
     const proxyUrl = String(settings.cloudV3ProxyUrl || '').trim();
     if (!proxyUrl) throw new ProviderError(provider, 'NO_CLOUD_V3_PROXY_URL', 0);
@@ -675,7 +727,7 @@ ${text}`)
     if (source && source !== 'auto') payload.sourceLanguageCode = source;
     const response = await fetchWithTimeout(provider, proxyUrl, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), credentials: 'omit', cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const message = data?.error?.message || data?.error || `Cloud Translation API v3 proxy batch failed: ${response.status}`;
@@ -689,7 +741,7 @@ ${text}`)
     return result;
   };
 
-  const translateBatchViaLibreTranslate = async ({ texts, sourceLang, targetLang, settings }) => {
+  const translateBatchViaLibreTranslate = async ({ texts, sourceLang, targetLang, settings, priority = 'prefetch' }) => {
     const provider = 'libretranslate';
     const baseUrl = settings.libreTranslateUrl || 'https://libretranslate.com';
     const source = sourceLang && sourceLang !== 'auto' ? providerLanguage(provider, sourceLang) : 'auto';
@@ -699,7 +751,7 @@ ${text}`)
 
     const response = await fetchWithTimeout(provider, buildUrl(baseUrl, '/translate'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), credentials: 'omit', cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const message = data?.error || data?.message || `LibreTranslate batch failed: ${response.status}`;
@@ -720,12 +772,10 @@ ${text}`)
     if (provider === 'cloud-v3-proxy') return translateBatchViaCloudV3Proxy(args);
     if (provider === 'microsoft-edge') return translateBatchViaMicrosoftEdge(args);
     if (provider === 'libretranslate') return translateBatchViaLibreTranslate(args);
-    // Free Google, Google Dictionary, Lingva, and MyMemory do not reliably expose
-    // a formal batch API to browser extensions. Use a guarded delimiter batch.
     return translateBatchViaDelimiter(provider, args);
   };
 
-  const translateBatchUsingProviders = async ({ texts, sourceLang, targetLang, settings }) => {
+  const translateBatchUsingProviders = async ({ texts, sourceLang, targetLang, settings, priority = 'prefetch' }) => {
     const order = getProviderOrder(settings);
     const errors = [];
     const activeProviders = order.filter((provider) => !isProviderCoolingDown(provider));
@@ -733,7 +783,13 @@ ${text}`)
 
     for (const provider of providersToTry) {
       try {
-        const translated = await retryProviderTask(provider, () => callProviderBatch(provider, { texts, sourceLang, targetLang, settings }));
+        const translated = await retryProviderTask(provider, () => callProviderBatch(provider, {
+          texts,
+          sourceLang,
+          targetLang,
+          settings,
+          priority
+        }), 1);
         markProviderSuccess(provider);
         return { provider, translated };
       } catch (error) {
@@ -750,7 +806,7 @@ ${text}`)
     const settings = await getSettings();
     const src = sourceLang || settings.sourceLang || 'auto';
     const tgt = targetLang || settings.targetLang || 'zh-TW';
-    const normalizedTexts = Array.from(new Set((Array.isArray(texts) ? texts : []).map(normalizeText).filter(Boolean))).slice(0, 20);
+    const normalizedTexts = Array.from(new Set((Array.isArray(texts) ? texts : []).map(normalizeText).filter(Boolean))).slice(0, 18);
     const results = [];
     const errors = [];
     const pending = [];
@@ -762,9 +818,12 @@ ${text}`)
         results.push({ text, translatedText: translateCache.get(cacheKey), source: 'cache' });
         continue;
       }
-      if (!force && inflightTranslate.has(cacheKey)) {
-        pending.push(inflightTranslate.get(cacheKey)
-          .then((translatedText) => results.push({ text, translatedText, source: 'inflight' }))
+      const foregroundPromise = !force ? inflightTranslate.get(cacheKey) : null;
+      const prefetchPromise = !force ? prefetchInflightTranslate.get(cacheKey) : null;
+      const existingPromise = foregroundPromise || prefetchPromise;
+      if (existingPromise) {
+        pending.push(existingPromise
+          .then((translatedText) => results.push({ text, translatedText, source: foregroundPromise ? 'foreground-inflight' : 'prefetch-inflight' }))
           .catch((error) => errors.push({ text, error: error.message || String(error) })));
         continue;
       }
@@ -778,8 +837,8 @@ ${text}`)
     if (!useBatch) {
       for (const text of missing) {
         try {
-          const translatedText = await translateText({ text, sourceLang: src, targetLang: tgt, force });
-          results.push({ text, translatedText, source: 'single' });
+          const translatedText = await translateText({ text, sourceLang: src, targetLang: tgt, force, priority: 'prefetch' });
+          results.push({ text, translatedText, source: 'single-prefetch' });
         } catch (error) {
           errors.push({ text, error: error.message || String(error) });
         }
@@ -791,7 +850,7 @@ ${text}`)
     for (const group of splitIntoBatches(missing, batchSize)) {
       const batchTask = (async () => {
         try {
-          const batchResult = await translateBatchUsingProviders({ texts: group, sourceLang: src, targetLang: tgt, settings });
+          const batchResult = await translateBatchUsingProviders({ texts: group, sourceLang: src, targetLang: tgt, settings, priority: 'prefetch' });
           const map = new Map();
           batchResult.translated.forEach((translatedText, index) => {
             const text = group[index];
@@ -806,7 +865,7 @@ ${text}`)
           const map = new Map();
           for (const text of group) {
             try {
-              const translatedText = await translateUsingProviders({ normalized: text, sourceLang: src, targetLang: tgt, settings });
+              const translatedText = await translateUsingProviders({ normalized: text, sourceLang: src, targetLang: tgt, settings, priority: 'prefetch' });
               const cacheKey = makeTranslateCacheKey(src, tgt, text);
               cacheSet(translateCache, cacheKey, translatedText);
               map.set(text, { translatedText, source: 'single-fallback' });
@@ -825,11 +884,15 @@ ${text}`)
           if (item?.translatedText) return item.translatedText;
           throw new Error(item?.error || 'Batch translation failed');
         });
-        if (!force) inflightTranslate.set(cacheKey, promise);
+        if (!force) prefetchInflightTranslate.set(cacheKey, promise);
       });
 
       const map = await batchTask;
-      group.forEach((text) => inflightTranslate.delete(makeTranslateCacheKey(src, tgt, text)));
+      group.forEach((text) => {
+        const cacheKey = makeTranslateCacheKey(src, tgt, text);
+        const promise = prefetchInflightTranslate.get(cacheKey);
+        if (promise) prefetchInflightTranslate.delete(cacheKey);
+      });
 
       for (const text of group) {
         const item = map.get(text);
@@ -837,7 +900,7 @@ ${text}`)
         else errors.push({ text, error: item?.error || 'Batch translation failed' });
       }
 
-      await sleep(120);
+      await sleep(80);
     }
 
     return { ok: true, count: results.length, results, errors, mode: 'batch' };
@@ -1121,7 +1184,7 @@ ${text}`)
 
     for (const groupData of groups.values()) {
       const items = groupData.items;
-      const allTexts = Array.from(new Set(items.flatMap((item) => item.texts).map(normalizeText).filter(Boolean))).slice(0, 60);
+      const allTexts = Array.from(new Set(items.flatMap((item) => item.texts).map(normalizeText).filter(Boolean))).slice(0, 18);
       if (!allTexts.length) {
         items.forEach((item) => item.resolve({ ok: true, count: 0, results: [], mode: 'empty' }));
         continue;
@@ -1141,7 +1204,7 @@ ${text}`)
   };
 
   const prefetchTranslations = async ({ texts, sourceLang, targetLang }) => {
-    const normalizedTexts = Array.from(new Set((texts || []).map(normalizeText).filter(Boolean))).slice(0, 60);
+    const normalizedTexts = Array.from(new Set((texts || []).map(normalizeText).filter(Boolean))).slice(0, 18);
     const cacheKey = `${sourceLang || 'auto'}|${targetLang || DEFAULT_SETTINGS.targetLang}|${normalizedTexts.join('\n')}`;
     if (prefetchBatchInflight.has(cacheKey)) return prefetchBatchInflight.get(cacheKey);
 
@@ -1160,7 +1223,7 @@ ${text}`)
     if (!message || typeof message !== 'object') return { ok: false, error: 'EMPTY_MESSAGE' };
     switch (message.type) {
       case 'YTBBI_TRANSLATE_TEXT': {
-        const translatedText = await translateText({ text: message.text, sourceLang: message.sourceLang, targetLang: message.targetLang, force: !!message.force });
+        const translatedText = await translateText({ text: message.text, sourceLang: message.sourceLang, targetLang: message.targetLang, force: !!message.force, priority: 'foreground' });
         return { ok: true, translatedText };
       }
       case 'YTBBI_PREFETCH_TRANSLATIONS': return prefetchTranslations({ texts: message.texts, sourceLang: message.sourceLang || 'auto', targetLang: message.targetLang || DEFAULT_SETTINGS.targetLang });

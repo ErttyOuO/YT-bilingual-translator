@@ -37,8 +37,10 @@
   });
 
   const CAPTION_SOURCE_LANG = 'auto';
-  const PREFETCH_AHEAD_MS = 30000;
-  const PREFETCH_AHEAD_MAX_COUNT = 48;
+  const PREFETCH_AHEAD_MS = 18000;
+  const PREFETCH_AHEAD_MAX_COUNT = 12;
+  const PREFETCH_REQUEST_MAX_COUNT = 6;
+  const PREFETCH_RETRY_COOLDOWN_MS = 8000;
   const VISIBLE_STABLE_DELAY_MS = 900;
   const VISIBLE_MIN_WORDS_FOR_QUICK_COMMIT = 4;
   const VISIBLE_MAX_WAIT_MS = 2800;
@@ -59,6 +61,7 @@
     routeTimer: null,
     textTimer: null,
     hoverTimer: null,
+    overlayInteractionUntil: 0,
     lastUrl: location.href,
     lastCaptionText: '',
     lastTranslatedText: '',
@@ -87,6 +90,7 @@
     currentStableCaptionKey: '',
     transcriptPrefetchedKeys: new Set(),
     transcriptPrefetchingKeys: new Set(),
+    transcriptPrefetchFailedUntil: new Map(),
     prefetchTimer: null,
     playbackTimer: null,
     playerToggleTimer: null,
@@ -437,11 +441,19 @@
     return true;
   };
 
-  const shouldBlockOverlayBecauseNativeCaptionsOff = () => {
+  const shouldBlockOverlayBecauseNativeCaptionsOff = (allowTransientShortsInteraction = false) => {
     if (!isSupportedVideoPage()) return true;
     if (!state.settings.requireNativeCaptions) return false;
 
     const active = isNativeCaptionActive();
+    if (!active && allowTransientShortsInteraction) {
+      // Shorts may temporarily detach/rebuild its CC button while the pointer is
+      // over the player. Do not record that brief false reading as an explicit
+      // user action, otherwise auto-enable would stay disabled for the video.
+      refreshPagePlayerDataSoon();
+      return false;
+    }
+
     observeNativeCaptionState(active);
     if (active) return false;
 
@@ -461,8 +473,20 @@
     state.lastRenderedOriginal = '';
     state.lastRenderedTranslation = '';
     state.lastRenderedStatus = '';
+    state.overlayInteractionUntil = 0;
+    state.lastLookupEntry = null;
+    clearTimeout(state.hoverTimer);
     clearTimeout(state.translationStatusTimer);
+    clearTimeout(state.emptyCaptionTimer);
     resetVisibleBufferState(false);
+    if (state.originalEl) state.originalEl.textContent = '';
+    if (state.translationEl) state.translationEl.textContent = '';
+    if (state.statusEl) {
+      state.statusEl.textContent = '';
+      state.statusEl.style.display = 'none';
+    }
+    if (state.overlay) state.overlay.classList.remove('ytbbi-has-content');
+    closeLookupPopover();
     hideOverlay();
   };
 
@@ -481,7 +505,7 @@
     updatePlayerToggleState();
     state.requestSeq += 1;
     if (!next) {
-      hideOverlay();
+      clearCaptionDisplayState();
       return;
     }
     state.lastCaptionText = '';
@@ -614,6 +638,7 @@
       const overlay = document.createElement('div');
       overlay.className = 'ytbbi-overlay';
       overlay.setAttribute('aria-live', 'polite');
+      overlay.setAttribute('aria-hidden', 'true');
 
       const card = document.createElement('div');
       card.className = 'ytbbi-card';
@@ -645,6 +670,14 @@
       state.originalEl = original;
       state.translationEl = translation;
       state.statusEl = status;
+
+      const markOverlayInteraction = (duration = 900) => {
+        state.overlayInteractionUntil = Math.max(state.overlayInteractionUntil, Date.now() + duration);
+      };
+      overlay.addEventListener('pointerenter', () => markOverlayInteraction(1200), true);
+      overlay.addEventListener('pointermove', () => markOverlayInteraction(900), { passive: true });
+      overlay.addEventListener('pointerdown', () => markOverlayInteraction(3000), true);
+      overlay.addEventListener('pointerleave', () => markOverlayInteraction(450), true);
     } else if (state.overlay.parentElement !== player) {
       player.appendChild(state.overlay);
     }
@@ -758,6 +791,15 @@
     container.appendChild(frag);
   };
 
+  const isShortsOverlayInteractionActive = () => {
+    if (!isShortsPage() || !state.lastCaptionText || !state.overlay) return false;
+    return (
+      state.overlay.classList.contains('ytbbi-dragging') ||
+      !!state.overlay.matches?.(':hover') ||
+      Date.now() < state.overlayInteractionUntil
+    );
+  };
+
   const showOverlay = ({ original = '', translation = '', status = '' }) => {
     const overlay = ensureOverlay();
     if (!overlay) return;
@@ -811,11 +853,17 @@
       (state.settings.showTranslation && translationText) ||
       statusText;
 
-    overlay.classList.toggle('ytbbi-visible', !!state.settings.enabled && !!hasVisibleText);
+    const visible = !!state.settings.enabled && !!hasVisibleText;
+    overlay.classList.toggle('ytbbi-has-content', !!hasVisibleText);
+    overlay.classList.toggle('ytbbi-visible', visible);
+    overlay.setAttribute('aria-hidden', visible ? 'false' : 'true');
   };
 
   const hideOverlay = () => {
-    if (state.overlay) state.overlay.classList.remove('ytbbi-visible');
+    if (state.overlay) {
+      state.overlay.classList.remove('ytbbi-visible', 'ytbbi-has-content');
+      state.overlay.setAttribute('aria-hidden', 'true');
+    }
   };
 
   const getVisibleCaptionText = () => {
@@ -1049,6 +1097,7 @@
     state.currentStableCaptionKey = '';
     state.transcriptPrefetchedKeys = new Set();
     state.transcriptPrefetchingKeys = new Set();
+    state.transcriptPrefetchFailedUntil = new Map();
     state.lastTranscriptIndex = -1;
     state.lastOverlaySignature = '';
     state.lastRenderedOriginal = '';
@@ -1838,7 +1887,7 @@
         const committed = commitVisibleBuffer();
         resetVisibleBufferState(false);
         state.emptyCaptionTimer = setTimeout(() => {
-          if (!getVisibleCaptionText()) hideOverlay();
+          if (!getVisibleCaptionText()) clearCaptionDisplayState();
         }, 1800);
         return committed;
       }
@@ -1976,12 +2025,17 @@
     const nowMs = getVideoCurrentMs();
     const horizonMs = nowMs + PREFETCH_AHEAD_MS;
     const upcoming = [];
-    for (let index = startIndex; index < state.transcriptCues.length; index += 1) {
+    // The current cue is always handled by the foreground path. Prefetch only
+    // future cues so background work cannot compete with what is on screen now.
+    for (let index = Math.min(startIndex + 1, state.transcriptCues.length); index < state.transcriptCues.length; index += 1) {
       const cue = state.transcriptCues[index];
-      if (cue.startMs > horizonMs && upcoming.length >= 8) break;
+      if (cue.startMs > horizonMs && upcoming.length >= 4) break;
       if (upcoming.length >= PREFETCH_AHEAD_MAX_COUNT) break;
       if (!cue?.text || !cue?.key) continue;
       if (state.transcriptPrefetchedKeys.has(cue.key) || state.transcriptPrefetchingKeys.has(cue.key)) continue;
+      const retryAfter = Number(state.transcriptPrefetchFailedUntil.get(cue.key) || 0);
+      if (retryAfter > Date.now()) continue;
+      if (retryAfter) state.transcriptPrefetchFailedUntil.delete(cue.key);
       upcoming.push(cue);
     }
     return upcoming;
@@ -1993,7 +2047,8 @@
     state.prefetchTimer = setTimeout(async () => {
       try {
         await ensureTranscriptForCurrentVideo(captionText || state.lastCaptionText);
-        const upcomingCues = getUpcomingCueTexts(captionText || state.lastCaptionText);
+        const upcomingCues = getUpcomingCueTexts(captionText || state.lastCaptionText)
+          .slice(0, PREFETCH_REQUEST_MAX_COUNT);
         if (!upcomingCues.length) {
           log('prefetch skipped: no upcoming transcript cues');
           return;
@@ -2008,16 +2063,31 @@
           sourceLang: CAPTION_SOURCE_LANG,
           targetLang: getCaptionTargetLang()
         }).then((response) => {
+          const resultMap = new Map(
+            (response?.results || [])
+              .filter((item) => item?.text && item?.translatedText)
+              .map((item) => [normalizeTranslationKeyText(item.text), item])
+          );
+
           upcomingCues.forEach((cue) => {
             state.transcriptPrefetchingKeys.delete(cue.key);
-            state.transcriptPrefetchedKeys.add(cue.key);
-          });
-          (response?.results || []).forEach((item) => {
-            if (item?.text && item?.translatedText) cacheDisplayTranslation(item.text, item.translatedText);
+            const item = resultMap.get(normalizeTranslationKeyText(cue.text));
+            if (item?.translatedText) {
+              cacheDisplayTranslation(cue.text, item.translatedText);
+              state.transcriptPrefetchedKeys.add(cue.key);
+              state.transcriptPrefetchFailedUntil.delete(cue.key);
+            } else {
+              // Do not mark missing results as prefetched. A short cooldown
+              // prevents an immediate retry loop while allowing a later retry.
+              state.transcriptPrefetchFailedUntil.set(cue.key, Date.now() + PREFETCH_RETRY_COOLDOWN_MS);
+            }
           });
           log('prefetch completed', response?.count || 0, response?.mode || '', texts[0]);
         }).catch((error) => {
-          upcomingCues.forEach((cue) => state.transcriptPrefetchingKeys.delete(cue.key));
+          upcomingCues.forEach((cue) => {
+            state.transcriptPrefetchingKeys.delete(cue.key);
+            state.transcriptPrefetchFailedUntil.set(cue.key, Date.now() + PREFETCH_RETRY_COOLDOWN_MS);
+          });
           log('prefetch failed', error);
         });
 
@@ -2025,7 +2095,7 @@
       } catch (error) {
         log('prefetch skipped', error);
       }
-    }, 120);
+    }, 180);
   };
 
   const explainTranslationError = (message) => {
@@ -2125,7 +2195,7 @@
       return;
     }
     if (!state.settings.enabled) {
-      hideOverlay();
+      clearCaptionDisplayState();
       return;
     }
 
@@ -2133,7 +2203,8 @@
     const currentVideoId = getVideoId();
     if (state.transcriptVideoId && currentVideoId && state.transcriptVideoId !== currentVideoId) resetTranscriptState();
 
-    if (shouldBlockOverlayBecauseNativeCaptionsOff()) {
+    const preserveShortsInteraction = isShortsOverlayInteractionActive();
+    if (shouldBlockOverlayBecauseNativeCaptionsOff(preserveShortsInteraction)) {
       clearCaptionDisplayState();
       return;
     }
@@ -2160,10 +2231,8 @@
     }
 
     if (!captionText) {
-      state.lastCaptionText = '';
-      state.lastTranslatedText = '';
-      state.currentStableCaptionKey = '';
-      hideOverlay();
+      if (preserveShortsInteraction || isShortsOverlayInteractionActive()) return;
+      clearCaptionDisplayState();
       return;
     }
 
@@ -2236,6 +2305,8 @@
   };
 
   const closeLookupPopover = () => {
+    clearTimeout(state.hoverTimer);
+    state.lookupAbortSeq += 1;
     if (state.lookupPopover) state.lookupPopover.classList.remove('ytbbi-pop-visible');
   };
 
@@ -2417,15 +2488,13 @@
 
     state.activeVideoId = videoId || state.activeVideoId;
     state.activePlayerElement = player || state.activePlayerElement;
-    state.lastCaptionText = '';
-    state.lastTranslatedText = '';
+    clearCaptionDisplayState();
     state.requestSeq += 1;
     resetTranscriptState();
     state.pageVideoId = '';
     state.pageSelectedTrack = null;
     state.pagePlayerResponse = null;
     resetVisibleBufferState();
-    closeLookupPopover();
     ensureOverlay();
     schedulePlayerToggleEnsure(120);
     applyOverlayPositionForCurrentVideo();
@@ -2444,8 +2513,7 @@
       if (location.href !== state.lastUrl) {
         routeChanged = true;
         state.lastUrl = location.href;
-        state.lastCaptionText = '';
-        state.lastTranslatedText = '';
+        clearCaptionDisplayState();
         state.requestSeq += 1;
         resetTranscriptState();
         state.pageVideoId = '';
@@ -2458,7 +2526,6 @@
         state.activeVideoId = getVideoId();
         state.activePlayerElement = findPlayer();
         syncPageBridgeState(true);
-        closeLookupPopover();
         ensureOverlay();
         applyOverlayPositionForCurrentVideo();
       }
@@ -2489,8 +2556,7 @@
       if (location.href !== state.lastUrl) {
         log('YouTube route changed:', location.href);
         state.lastUrl = location.href;
-        state.lastCaptionText = '';
-        state.lastTranslatedText = '';
+        clearCaptionDisplayState();
         state.requestSeq += 1;
         resetTranscriptState();
         state.pageVideoId = '';
@@ -2503,7 +2569,6 @@
         state.activeVideoId = getVideoId();
         state.activePlayerElement = findPlayer();
         syncPageBridgeState(true);
-        closeLookupPopover();
         ensureOverlay();
         schedulePlayerToggleEnsure(100);
         refreshPagePlayerDataSoon();

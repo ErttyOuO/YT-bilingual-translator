@@ -26,6 +26,18 @@
   opacity: 1;
 }
 
+.ytbbi-overlay:not(.ytbbi-visible) .ytbbi-card {
+  pointer-events: none;
+}
+
+
+/* Keep a valid Shorts subtitle visible while the pointer is over the card.
+   JS also applies a short interaction grace period, while ytbbi-has-content
+   prevents an empty or stale overlay from being revived by hover. */
+html.ytbbi-shorts-mode .ytbbi-overlay.ytbbi-has-content:hover {
+  opacity: 1 !important;
+}
+
 .ytbbi-card {
   display: inline-flex;
   flex-direction: column;

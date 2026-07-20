@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
   "name": "YT Bilingual Translator",
-  "version": "0.36.1",
-  "description": "YouTube bilingual subtitles for watch pages and Shorts, with responsive Shorts layout, native-CC sync, translation, and interactive vocabulary cards.",
+  "version": "0.36.4",
+  "description": "YouTube bilingual subtitles for watch pages and Shorts, with native-CC sync, transcript-first translation, and interactive vocabulary cards.",
   "icons": {
     "48": "icons/icon-48.png",
     "96": "icons/icon-96.png",
