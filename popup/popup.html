@@ -46,6 +46,7 @@
             <span data-i18n="targetLanguage">翻譯目標語言</span>
             <select id="onboardingTargetLang" class="target-language-select"></select>
           </label>
+          <p class="onboarding-hint" data-i18n="onboardingDefaultBilingual">未修改時，預設顯示英文原文與繁體中文字幕。</p>
           <div class="button-row">
             <button id="onboardingBack" type="button" class="secondary" data-i18n="onboardingBack">上一步</button>
             <button id="onboardingDone" type="button" data-i18n="onboardingDone">開始使用</button>
@@ -59,6 +60,7 @@
       <button type="button" class="tab" data-panel="panel-translation" data-i18n="tabTranslation">翻譯</button>
       <button type="button" class="tab" data-panel="panel-subtitle" data-i18n="tabSubtitle">字幕</button>
       <button type="button" class="tab" data-panel="panel-learning" data-i18n="tabLearning">學習</button>
+      <button type="button" class="tab" data-panel="panel-performance" data-i18n="tabPerformance">效能</button>
       <button type="button" class="tab" data-panel="panel-advanced" data-i18n="tabAdvanced">進階</button>
     </nav>
 
@@ -86,6 +88,10 @@
         <input id="sourceLang" type="hidden" value="auto" />
         <input id="learningMode" type="hidden" value="auto-target" />
         <div class="note" data-i18n="targetLanguageNote">建議語言學習時保留「顯示原文」與「顯示翻譯」，可同時看原文與目標語言。</div>
+        <div class="platform-toggle-group">
+          <label class="check"><input id="twitchEnabled" type="checkbox" /> <span data-i18n="twitchLiveEnabled">Twitch Live 雙語字幕</span></label>
+          <small data-i18n="twitchLiveEnabledHelp">有原生 Twitch CC 的直播會自動啟用 CC、隱藏原字幕並顯示雙語字幕；也可從 Twitch 播放器 CC 旁的外掛按鈕快速切換。</small>
+        </div>
       </section>
 
       <section class="section card compact-actions">
@@ -103,6 +109,7 @@
             <option value="auto-free" data-i18n="providerAutoFree">自動免費模式（Microsoft + Google + 備援）</option>
             <option value="microsoft-edge" data-i18n="providerMicrosoft">Microsoft Edge Translate（免費批次備援）</option>
             <option value="google-free" data-i18n="providerGoogleFree">免費 Google 翻譯（免 API Key／免 Cloud Project）</option>
+            <option value="gemini" data-i18n="providerGemini">Gemini API（自選主要／備援模型）</option>
             <option value="cloud-v2" data-i18n="providerCloudV2">官方 Google Cloud Translation Basic v2（API Key）</option>
             <option value="cloud-v3-proxy" data-i18n="providerCloudV3">官方 Google Cloud Translation v3 translateText（Proxy）</option>
             <option value="libretranslate" data-i18n="providerLibre">LibreTranslate（開源／可自架）</option>
@@ -113,17 +120,78 @@
         <label class="check"><input id="autoFailover" type="checkbox" /> <span data-i18n="autoFailover">免費來源失敗時自動切換備援</span></label>
       </section>
 
+
+
+      <section class="section card provider-field provider-gemini gemini-settings-card">
+        <h2 data-i18n="geminiSection">Gemini API 設定</h2>
+        <p class="reference-note" data-i18n="geminiIntro">API Key 與模型都可在這裡直接設定。先測試金鑰並取得模型，再選主要與備援模型。</p>
+        <label class="field">
+          <span data-i18n="geminiApiKey">Gemini API Key</span>
+          <div class="secret-input-row">
+            <input id="geminiApiKey" type="password" placeholder="Gemini API Key" data-i18n-placeholder="geminiApiKeyPlaceholder" autocomplete="off" spellcheck="false" />
+            <button id="toggleGeminiApiKey" type="button" class="secondary compact-button" data-i18n="showKey">顯示</button>
+          </div>
+          <small data-i18n="geminiApiKeyHelp">金鑰只儲存在 Firefox extension storage；不會寫入外掛原始碼。</small>
+        </label>
+        <div class="button-row gemini-actions">
+          <button id="loadGeminiModels" type="button" class="secondary" data-i18n="geminiLoadModels">測試金鑰並取得模型</button>
+        </div>
+        <label class="field">
+          <span data-i18n="geminiPrimaryModel">主要模型</span>
+          <select id="geminiPrimaryModel">
+            <option value="" data-i18n="geminiChooseModel">請先取得模型</option>
+          </select>
+          <small id="geminiPrimaryModelInfo" class="model-info"></small>
+        </label>
+        <label class="field">
+          <span data-i18n="geminiFallbackModel">備援模型</span>
+          <select id="geminiFallbackModel">
+            <option value="" data-i18n="geminiNoFallback">不使用備援模型</option>
+          </select>
+          <small id="geminiFallbackModelInfo" class="model-info"></small>
+        </label>
+        <label class="check">
+          <input id="geminiModelFailover" type="checkbox" />
+          <span data-i18n="geminiModelFailover">主要模型錯誤時自動切換備援模型</span>
+        </label>
+        <div class="button-row gemini-actions">
+          <button id="saveGeminiSettings" type="button" class="secondary" data-i18n="geminiSave">儲存 Gemini 設定</button>
+          <button id="testGeminiSettings" type="button" data-i18n="geminiTest">測試主要／備援模型</button>
+        </div>
+        <div id="geminiStatus" class="gemini-status" role="status" aria-live="polite"></div>
+      </section>
+
+      <section class="section card provider-field provider-cloud-v2">
+        <h2 data-i18n="cloudSection">Google Cloud</h2>
+        <label class="field"><span data-i18n="cloudApiKey">Google Cloud API Key</span><input id="googleCloudApiKey" type="password" placeholder="Google Cloud API Key" data-i18n-placeholder="cloudApiKeyPlaceholder" autocomplete="off" /><small data-i18n="cloudApiKeyHelp">只在官方 Cloud Basic v2 模式使用。免費 Google 模式不需要填。</small></label>
+      </section>
+      <section class="section card provider-field provider-cloud-v3-proxy">
+        <h2 data-i18n="cloudV3Section">Cloud v3 Proxy</h2>
+        <label class="field"><span data-i18n="cloudV3ProxyUrl">v3 Proxy URL</span><input id="cloudV3ProxyUrl" type="url" placeholder="https://your-service.run.app/translate" data-i18n-placeholder="cloudV3ProxyPlaceholder" /><small data-i18n="cloudV3ProxyHelp">只在官方 Advanced v3 模式使用；不要把 service account 放進外掛。</small></label>
+      </section>
+      <section class="section card provider-field provider-libretranslate">
+        <h2 data-i18n="libreSection">LibreTranslate</h2>
+        <label class="field"><span data-i18n="libreUrl">LibreTranslate URL</span><input id="libreTranslateUrl" type="url" placeholder="https://libretranslate.com" data-i18n-placeholder="libreUrlPlaceholder" /><small data-i18n="libreUrlHelp">可填公開服務或自架 URL。</small></label>
+        <label class="field"><span data-i18n="libreApiKey">LibreTranslate API Key（選用）</span><input id="libreTranslateApiKey" type="password" placeholder="需要時再填" data-i18n-placeholder="libreApiKeyPlaceholder" autocomplete="off" /></label>
+      </section>
+      <section class="section card provider-field provider-lingva">
+        <h2 data-i18n="lingvaSection">Lingva</h2>
+        <label class="field"><span data-i18n="lingvaUrl">Lingva Instance URL</span><input id="lingvaInstanceUrl" type="url" placeholder="https://lingva.ml" data-i18n-placeholder="lingvaUrlPlaceholder" /><small data-i18n="lingvaUrlHelp">公開 instance 可能不穩，適合作為備用。</small></label>
+      </section>
+
       <section class="section card">
         <h2 data-i18n="prefetchSection">預取與批次翻譯</h2>
         <label class="check"><input id="batchTranslationEnabled" type="checkbox" /> <span data-i18n="batchTranslationEnabled">預取字幕時合併成批次翻譯，降低請求數</span></label>
         <label class="field">
           <span data-i18n="batchSize">每批句數</span>
           <select id="batchSize">
-            <option value="3" data-i18n="batch3">3 句：較穩</option>
-            <option value="5" data-i18n="batch5">5 句：推薦</option>
-            <option value="8" data-i18n="batch8">8 句：請求更少但較可能拆句失敗</option>
+            <option value="3" data-i18n="batch3">3 句：最高穩定</option>
+            <option value="5" data-i18n="batch5">5 句：保守</option>
+            <option value="8" data-i18n="batch8">8 句：推薦</option>
+            <option value="12" data-i18n="batch12">12 句：高效率</option>
+            <option value="16" data-i18n="batch16">16 句：最低請求（Gemini／原生 Batch 較適合）</option>
           </select>
-          <small data-i18n="batchHelp">只影響後方字幕預取；會預載目前時間後約 30 秒字幕。</small>
+          <small data-i18n="batchHelp">只影響後方字幕預取；1x 約預載 90 秒，播放加速時會自動延伸，最多約 150 秒。8 句為推薦；12／16 句在 Gemini 或原生 Batch API 最有效，免費分隔型來源會自動安全拆成最多 8 句並驗證編號。</small>
         </label>
       </section>
     </section>
@@ -150,7 +218,7 @@
     <section id="panel-learning" class="panel">
       <section class="section card">
         <h2 data-i18n="interactiveSection">互動式字幕</h2>
-        <label class="check"><input id="interactiveLookup" type="checkbox" /> <span data-i18n="interactiveLookup">點擊 / hover 英文單字顯示單字卡</span></label>
+        <label class="check"><input id="interactiveLookup" type="checkbox" /> <span data-i18n="interactiveLookup">點擊英文單字顯示單字卡</span></label>
         <label class="check"><input id="showWordUnderline" type="checkbox" /> <span data-i18n="showWordUnderline">在可查詢單字下方顯示虛線</span></label>
         <label class="field">
           <span data-i18n="dictionaryMode">單字卡顯示</span>
@@ -172,24 +240,27 @@
       </section>
     </section>
 
+    <section id="panel-performance" class="panel">
+      <section class="section card">
+        <h2 data-i18n="performanceSection">效能與位置同步</h2>
+        <p class="reference-note" data-i18n="performanceIntro">預設開啟即時位置同步。可個別關閉較頻繁的幾何更新，以降低低效能裝置的負擔。</p>
+        <div class="performance-option">
+          <label class="check"><input id="recalculateOnScroll" type="checkbox" /> <span data-i18n="recalculateOnScroll">頁面捲動時讓字幕跟隨原始位置</span></label>
+          <small data-i18n="recalculateOnScrollHelp">預設開啟；拖曳後會記住字幕在頁面上的位置。捲動時字幕跟著頁面移動，完全離開可視範圍時暫時隱藏，捲回後自動恢復。</small>
+        </div>
+        <div class="performance-option">
+          <label class="check"><input id="recalculateOnViewportResize" type="checkbox" /> <span data-i18n="recalculateOnViewportResize">視窗尺寸改變時重新計算</span></label>
+          <small data-i18n="recalculateOnViewportResizeHelp">處理 Firefox 視窗縮放與瀏覽器可視區尺寸變化。</small>
+        </div>
+        <div class="performance-option">
+          <label class="check"><input id="observePlayerResize" type="checkbox" /> <span data-i18n="observePlayerResize">監看播放器尺寸變化</span></label>
+          <small data-i18n="observePlayerResizeHelp">處理劇院模式、Shorts 版面及播放器尺寸重排；關閉可減少 ResizeObserver 工作。</small>
+        </div>
+        <div class="note" data-i18n="performanceSafetyNote">這些選項只影響字幕位置同步，不會關閉字幕讀取、翻譯、查字或預取。全螢幕進出仍保留必要的安全定位。</div>
+      </section>
+    </section>
+
     <section id="panel-advanced" class="panel">
-      <section class="section card provider-field provider-cloud-v2">
-        <h2 data-i18n="cloudSection">Google Cloud</h2>
-        <label class="field"><span data-i18n="cloudApiKey">Google Cloud API Key</span><input id="googleCloudApiKey" type="password" placeholder="Google Cloud API Key" data-i18n-placeholder="cloudApiKeyPlaceholder" autocomplete="off" /><small data-i18n="cloudApiKeyHelp">只在官方 Cloud Basic v2 模式使用。免費 Google 模式不需要填。</small></label>
-      </section>
-      <section class="section card provider-field provider-cloud-v3-proxy">
-        <h2 data-i18n="cloudV3Section">Cloud v3 Proxy</h2>
-        <label class="field"><span data-i18n="cloudV3ProxyUrl">v3 Proxy URL</span><input id="cloudV3ProxyUrl" type="url" placeholder="https://your-service.run.app/translate" data-i18n-placeholder="cloudV3ProxyPlaceholder" /><small data-i18n="cloudV3ProxyHelp">只在官方 Advanced v3 模式使用；不要把 service account 放進外掛。</small></label>
-      </section>
-      <section class="section card provider-field provider-libretranslate">
-        <h2 data-i18n="libreSection">LibreTranslate</h2>
-        <label class="field"><span data-i18n="libreUrl">LibreTranslate URL</span><input id="libreTranslateUrl" type="url" placeholder="https://libretranslate.com" data-i18n-placeholder="libreUrlPlaceholder" /><small data-i18n="libreUrlHelp">可填公開服務或自架 URL。</small></label>
-        <label class="field"><span data-i18n="libreApiKey">LibreTranslate API Key（選用）</span><input id="libreTranslateApiKey" type="password" placeholder="需要時再填" data-i18n-placeholder="libreApiKeyPlaceholder" autocomplete="off" /></label>
-      </section>
-      <section class="section card provider-field provider-lingva">
-        <h2 data-i18n="lingvaSection">Lingva</h2>
-        <label class="field"><span data-i18n="lingvaUrl">Lingva Instance URL</span><input id="lingvaInstanceUrl" type="url" placeholder="https://lingva.ml" data-i18n-placeholder="lingvaUrlPlaceholder" /><small data-i18n="lingvaUrlHelp">公開 instance 可能不穩，適合作為備用。</small></label>
-      </section>
 
       <section class="section card project-info-card">
         <h2 data-i18n="projectInfoSection">專案資訊</h2>

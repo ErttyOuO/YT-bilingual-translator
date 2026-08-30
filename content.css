@@ -5,13 +5,12 @@
 }
 
 .ytbbi-overlay {
-  position: absolute;
+  position: fixed;
   left: 50%;
-  bottom: var(--ytbbi-bottom);
-  transform: translateX(-50%);
+  top: 50%;
   z-index: 2147483646;
-  width: min(var(--ytbbi-max-width), calc(100% - 32px));
-  max-width: calc(100% - 32px);
+  width: max-content;
+  max-width: min(var(--ytbbi-overlay-max-width, calc(100vw - 16px)), calc(100vw - 16px));
   box-sizing: border-box;
   pointer-events: none;
   text-align: center;
@@ -26,22 +25,38 @@
   opacity: 1;
 }
 
-.ytbbi-overlay:not(.ytbbi-visible) .ytbbi-card {
-  pointer-events: none;
+/* Keep an already-visible subtitle on screen while the user interacts with it.
+   Hidden overlays cannot be revived by hovering their old page position. */
+.ytbbi-overlay.ytbbi-visible:hover,
+.ytbbi-overlay.ytbbi-visible:focus-within,
+.ytbbi-overlay.ytbbi-interacting,
+.ytbbi-overlay.ytbbi-dragging {
+  opacity: 1 !important;
+  visibility: visible !important;
 }
 
+.ytbbi-overlay:not(.ytbbi-visible):not(.ytbbi-interacting):not(.ytbbi-dragging),
+.ytbbi-overlay:not(.ytbbi-visible):not(.ytbbi-interacting):not(.ytbbi-dragging) .ytbbi-card {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
 
-/* Keep a valid Shorts subtitle visible while the pointer is over the card.
-   JS also applies a short interaction grace period, while ytbbi-has-content
-   prevents an empty or stale overlay from being revived by hover. */
-html.ytbbi-shorts-mode .ytbbi-overlay.ytbbi-has-content:hover {
-  opacity: 1 !important;
+/* A page-anchored subtitle follows the document while scrolling. When its saved
+   position is completely outside the browser viewport, hide it until scrolling
+   brings that position back into view. */
+.ytbbi-overlay.ytbbi-outside-viewport,
+.ytbbi-overlay.ytbbi-outside-viewport .ytbbi-card {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
 }
 
 .ytbbi-card {
   display: inline-flex;
   flex-direction: column;
+  align-items: stretch;
   gap: 4px;
+  text-align: center;
   width: fit-content;
   padding: 8px 14px;
   border-radius: 12px;
@@ -56,6 +71,8 @@ html.ytbbi-shorts-mode .ytbbi-overlay.ytbbi-has-content:hover {
 .ytbbi-original,
 .ytbbi-translation {
   display: block;
+  align-self: stretch;
+  text-align: center;
   overflow-wrap: normal;
   word-break: normal;
   text-wrap: initial;
@@ -74,6 +91,8 @@ html.ytbbi-shorts-mode .ytbbi-overlay.ytbbi-has-content:hover {
 }
 
 .ytbbi-status {
+  align-self: stretch;
+  text-align: center;
   font-size: calc(var(--ytbbi-font-size) * 0.72);
   opacity: 0.82;
 }
@@ -286,8 +305,7 @@ html.ytbbi-shorts-mode .ytbbi-overlay.ytbbi-has-content:hover {
 
 
 html.ytbbi-shorts-mode .ytbbi-overlay {
-  bottom: max(16%, 92px);
-  max-width: min(var(--ytbbi-max-width), 360px, calc(100vw - 32px));
+  max-width: min(var(--ytbbi-overlay-max-width, 360px), 360px, calc(100vw - 16px));
 }
 
 html.ytbbi-shorts-mode .ytbbi-card {
@@ -381,6 +399,13 @@ html.ytbbi-shorts-mode .ytbbi-popover {
 
 .ytbbi-card {
   position: relative;
+  cursor: grab;
+  touch-action: none;
+}
+
+.ytbbi-overlay.ytbbi-dragging .ytbbi-card,
+.ytbbi-overlay.ytbbi-dragging .ytbbi-word {
+  cursor: grabbing;
 }
 
 /* v0.29 in-player bilingual subtitle toggle */
@@ -482,53 +507,9 @@ html.ytbbi-shorts-mode .ytbbi-popover {
 }
 
 
-/* v0.37 Shorts control bar and compact layout */
-html.ytbbi-shorts-mode #right-controls,
-html.ytbbi-shorts-mode ytd-shorts-player-controls #right-controls {
-  width: auto !important;
-  min-width: max-content !important;
-  padding-inline: 8px !important;
-  column-gap: 2px;
-}
-
-html.ytbbi-shorts-mode #closed-captioning-button-container,
-html.ytbbi-shorts-mode ytm-closed-captioning-button {
-  display: inline-flex !important;
-  align-items: center !important;
-  width: auto !important;
-  min-width: max-content !important;
-}
-
-html.ytbbi-shorts-mode #closed-captioning-button-container .ytbbi-player-toggle,
-html.ytbbi-shorts-mode ytm-closed-captioning-button .ytbbi-player-toggle {
-  width: 32px !important;
-  min-width: 32px !important;
-  height: 32px !important;
-  margin-inline: 2px !important;
-}
-
-html.ytbbi-shorts-mode #closed-captioning-button-container .ytbbi-player-toggle-icon,
-html.ytbbi-shorts-mode ytm-closed-captioning-button .ytbbi-player-toggle-icon {
-  width: 24px;
-  height: 24px;
-}
-
-html.ytbbi-shorts-compact-layout .ytbbi-overlay {
-  width: min(86%, 360px, calc(100% - 36px));
-  max-width: min(86%, 360px, calc(100% - 36px));
-}
-
-html.ytbbi-shorts-compact-layout .ytbbi-card {
-  padding: 6px 10px;
-  background: rgba(0, 0, 0, 0.58);
-}
-
-html.ytbbi-shorts-compact-layout .ytbbi-original {
-  font-size: calc(var(--ytbbi-font-size) * 0.8);
-}
-
-html.ytbbi-shorts-compact-layout .ytbbi-translation {
-  font-size: calc(var(--ytbbi-font-size) * 0.9);
+/* v0.35 Shorts toggle placement */
+.ytbbi-shorts-toggle-host {
+  display: none !important;
 }
 
 html.ytbbi-shorts-mode .ytbbi-overlay {

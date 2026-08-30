@@ -8,14 +8,6 @@
   let lastSentKey = '';
   const postedUrls = new Set();
 
-  const isWatchPage = () => /^\/watch(?:\/|$|\?)/.test(location.pathname);
-  const isEmbedPage = () => /^\/embed(?:\/|$)/.test(location.pathname);
-  const isShortsPage = () => /^\/shorts(?:\/|$)/.test(location.pathname) || !!document.querySelector('ytd-shorts, ytd-reel-video-renderer');
-  const isSupportedVideoPage = () => isWatchPage() || isShortsPage() || isEmbedPage();
-  let bridgeActive = isSupportedVideoPage();
-
-  const canOperate = () => bridgeActive && isSupportedVideoPage();
-
   const clone = (value) => {
     try {
       return JSON.parse(JSON.stringify(value));
@@ -34,7 +26,6 @@
   };
 
   const postTimedtextUrl = (value) => {
-    if (!canOperate()) return;
     if (!isTimedtextUrl(value)) return;
     const url = new URL(String(value), location.href).toString();
     if (postedUrls.has(url)) return;
@@ -42,6 +33,8 @@
     if (postedUrls.size > 30) postedUrls.delete(postedUrls.values().next().value);
     window.postMessage({ type: `${BRIDGE_PREFIX}TIMEDTEXT_URL`, url }, '*');
   };
+
+  const isShortsPage = () => /^\/shorts(?:\/|$)/.test(location.pathname) || !!document.querySelector('ytd-shorts, ytd-reel-video-renderer');
 
   const getVisibleElementScore = (element) => {
     if (!element?.getBoundingClientRect) return 0;
@@ -131,7 +124,6 @@
   };
 
   const sendPlayerData = (requestId = '') => {
-    if (!canOperate()) return;
     const player = findPlayer();
     const playerResponse = getPlayerResponse(player);
     const selectedTrack = getSelectedTrack(player);
@@ -187,22 +179,11 @@
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     const message = event.data;
-    if (!message || typeof message !== 'object') return;
-
-    if (message.type === 'YTBBI_CONTENT_SET_BRIDGE_ACTIVE') {
-      bridgeActive = !!message.active;
-      if (!bridgeActive) lastSentKey = '';
-      return;
-    }
-
-    if (message.type !== 'YTBBI_CONTENT_GET_PLAYER_DATA') return;
+    if (!message || message.type !== 'YTBBI_CONTENT_GET_PLAYER_DATA') return;
     sendPlayerData(message.requestId || '');
   });
 
   installNetworkObserver();
-  if (canOperate()) sendPlayerData();
-  setInterval(() => {
-    if (!canOperate()) return;
-    sendPlayerData();
-  }, 1200);
+  sendPlayerData();
+  setInterval(sendPlayerData, 1200);
 })();

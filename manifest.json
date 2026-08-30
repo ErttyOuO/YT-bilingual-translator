@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
   "name": "YT Bilingual Translator",
-  "version": "0.36.4",
-  "description": "YouTube bilingual subtitles for watch pages and Shorts, with native-CC sync, transcript-first translation, and interactive vocabulary cards.",
+  "version": "0.52.0",
+  "description": "YouTube and Twitch Live bilingual subtitles with Gemini model failover, adaptive 90–150 second YouTube prefetch, safer high-density batch translation, stable Twitch native-CC support, and learning tools.",
   "icons": {
     "48": "icons/icon-48.png",
     "96": "icons/icon-96.png",
@@ -12,9 +12,11 @@
     "storage",
     "tabs",
     "*://*.youtube.com/*",
+    "*://*.twitch.tv/*",
     "https://translate.googleapis.com/*",
     "https://clients5.google.com/*",
     "https://translation.googleapis.com/*",
+    "https://generativelanguage.googleapis.com/*",
     "https://api.dictionaryapi.dev/*",
     "https://libretranslate.com/*",
     "https://*.libretranslate.com/*",
@@ -40,6 +42,19 @@
       ],
       "css": [
         "content.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://*.twitch.tv/*"
+      ],
+      "js": [
+        "i18n.js",
+        "twitch-content.js"
+      ],
+      "css": [
+        "twitch-content.css"
       ],
       "run_at": "document_idle"
     }

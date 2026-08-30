@@ -1,6 +1,6 @@
 # 隱私政策
 
-YT 雙語字幕翻譯器是一個在瀏覽器本機執行的擴充功能。它不需要建立帳號，不主動追蹤使用者，也不販售資料。
+YT 雙語字幕翻譯器是一個在瀏覽器本機執行的擴充功能，支援 YouTube 與 Twitch Live 原生字幕。它不需要建立帳號，不主動追蹤使用者，也不販售資料。
 
 ## 本機儲存的資料
 
@@ -20,6 +20,7 @@ YT 雙語字幕翻譯器是一個在瀏覽器本機執行的擴充功能。它�
 - Google Translate free endpoints
 - Microsoft Edge Translate endpoints
 - Google Cloud Translation，如果你自行設定
+- Google Gemini API，如果你自行設定 Gemini API Key 與模型
 - LibreTranslate，如果你自行設定
 - Lingva
 - MyMemory
@@ -28,11 +29,19 @@ YT 雙語字幕翻譯器是一個在瀏覽器本機執行的擴充功能。它�
 
 ## API Key
 
-如果你在設定中輸入 Google Cloud 或 LibreTranslate API Key，資料會儲存在你自己的瀏覽器 extension storage 中。請不要把 API Key 放在 GitHub issue、截圖或公開影片中。
+如果你在設定中輸入 Google Cloud、Gemini 或 LibreTranslate API Key，資料會儲存在你自己的瀏覽器 extension storage 中。Gemini API Key 只會在呼叫 `generativelanguage.googleapis.com` 時用於驗證，並不會寫入擴充功能原始碼或傳送到本專案自建伺服器。請不要把 API Key 放在 GitHub issue、截圖或公開影片中。
+
+Gemini 翻譯啟用時，字幕文字會依使用者選擇的主要／備援 Gemini 模型送至 Google Gemini API。若主要模型因限流、過載、暫時服務錯誤或模型不可用而失敗，且使用者啟用了模型備援，外掛可能把同一段字幕送到使用者指定的備援 Gemini 模型。
 
 ## 第三方服務
 
-本專案不是 YouTube、Google、Microsoft、Wikipedia、Wikimedia 或 LibreTranslate 的官方產品。外部服務的可用性、限流與隱私政策由各服務自行決定。
+
+### Twitch Live Closed Captions
+
+在 Twitch Live 頁面中，擴充功能只處理 Twitch 本身已提供的 Closed Captions，不擷取直播音訊，也不自行進行語音辨識。為產生雙語字幕，原生 CC 文字會依使用者選擇的翻譯來源送至相同的外部翻譯服務。Twitch 的字幕位置與暫存狀態保存在瀏覽器本機，不會上傳到本專案自建伺服器。
+v0.48 新增的 Twitch 播放器開關與字幕來源穩定化只在瀏覽器本機運作，不新增資料種類、外部服務或資料收集。
+
+本專案不是 YouTube、Twitch、Google、Microsoft、Wikipedia、Wikimedia 或 LibreTranslate 的官方產品。外部服務的可用性、限流與隱私政策由各服務自行決定。
 
 
 ## v0.19 補充：可自訂翻譯目標語言

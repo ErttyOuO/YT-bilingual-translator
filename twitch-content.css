@@ -1,0 +1,534 @@
+:root {
+  --tbt-twitch-font-size: 18px;
+  --tbt-twitch-bottom: 12%;
+  --tbt-twitch-max-width: 92%;
+}
+
+.tbt-twitch-overlay {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  z-index: 2147483646;
+  width: max-content;
+  max-width: min(var(--tbt-twitch-overlay-max-width, calc(100vw - 16px)), calc(100vw - 16px));
+  box-sizing: border-box;
+  pointer-events: none;
+  text-align: center;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "Microsoft JhengHei", Arial, sans-serif;
+  color: #fff;
+  line-height: 1.35;
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+
+.tbt-twitch-overlay.tbt-twitch-visible {
+  opacity: 1;
+}
+
+/* Keep an already-visible subtitle on screen while the user interacts with it.
+   Hidden overlays cannot be revived by hovering their old page position. */
+.tbt-twitch-overlay.tbt-twitch-visible:hover,
+.tbt-twitch-overlay.tbt-twitch-visible:focus-within,
+.tbt-twitch-overlay.tbt-twitch-interacting,
+.tbt-twitch-overlay.tbt-twitch-dragging {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+.tbt-twitch-overlay:not(.tbt-twitch-visible):not(.tbt-twitch-interacting):not(.tbt-twitch-dragging),
+.tbt-twitch-overlay:not(.tbt-twitch-visible):not(.tbt-twitch-interacting):not(.tbt-twitch-dragging) .tbt-twitch-card {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+/* A page-anchored subtitle follows the document while scrolling. When its saved
+   position is completely outside the browser viewport, hide it until scrolling
+   brings that position back into view. */
+.tbt-twitch-overlay.tbt-twitch-outside-viewport,
+.tbt-twitch-overlay.tbt-twitch-outside-viewport .tbt-twitch-card {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+.tbt-twitch-card {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  text-align: center;
+  width: fit-content;
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.64);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  max-width: 100%;
+  pointer-events: auto;
+}
+
+.tbt-twitch-original,
+.tbt-twitch-translation {
+  display: block;
+  align-self: stretch;
+  text-align: center;
+  overflow-wrap: normal;
+  word-break: normal;
+  text-wrap: initial;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95);
+}
+
+.tbt-twitch-original {
+  font-size: calc(var(--tbt-twitch-font-size) * 0.92);
+  opacity: 0.9;
+  font-weight: 500;
+}
+
+.tbt-twitch-translation {
+  font-size: var(--tbt-twitch-font-size);
+  font-weight: 700;
+}
+
+.tbt-twitch-status {
+  align-self: stretch;
+  text-align: center;
+  font-size: calc(var(--tbt-twitch-font-size) * 0.72);
+  opacity: 0.82;
+}
+
+.tbt-twitch-word {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  padding: 0 1px;
+  margin: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-shadow: inherit;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.tbt-twitch-word:hover,
+.tbt-twitch-word:focus-visible {
+  background: rgba(255, 255, 255, 0.18);
+  outline: none;
+}
+
+.tbt-twitch-word-underline .tbt-twitch-word {
+  text-decoration: underline dotted rgba(255, 255, 255, 0.55);
+  text-underline-offset: 3px;
+}
+
+.tbt-twitch-popover {
+  position: fixed;
+  z-index: 2147483647;
+  box-sizing: border-box;
+  max-height: min(460px, calc(100vh - 24px));
+  overflow: auto;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.98);
+  color: #101614;
+  box-shadow: 0 14px 46px rgba(0, 0, 0, 0.34);
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "Microsoft JhengHei", Arial, sans-serif;
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+  transition: opacity 120ms ease-out, transform 120ms ease-out;
+}
+
+.tbt-twitch-popover.tbt-twitch-pop-visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.tbt-twitch-pop-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.tbt-twitch-pop-word {
+  display: block;
+  font-size: 22px;
+  line-height: 1.15;
+}
+
+.tbt-twitch-pop-phonetic {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #607068;
+}
+
+.tbt-twitch-pop-close {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 0;
+  background: #edf2ef;
+  color: #25352e;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tbt-twitch-pop-body {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px 14px;
+}
+
+.tbt-twitch-pop-section {
+  display: grid;
+  gap: 4px;
+}
+
+.tbt-twitch-pop-label {
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #edf2ef;
+  color: #607068;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.tbt-twitch-pop-section p,
+.tbt-twitch-loading,
+.tbt-twitch-error,
+.tbt-twitch-vocab-status {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.tbt-twitch-pop-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 2px;
+}
+
+.tbt-twitch-add-vocab {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  border-radius: 999px;
+  background: #1f8f5f;
+  color: #fff;
+  padding: 7px 11px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tbt-twitch-audio {
+  color: #1f6750;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.tbt-twitch-vocab-status {
+  color: #607068;
+  min-height: 18px;
+}
+
+.tbt-twitch-error {
+  color: #b3261e;
+}
+
+.tbt-twitch-hide-native-captions .ytp-caption-window-container,
+.tbt-twitch-hide-native-captions .ytp-caption-window-container *,
+.tbt-twitch-hide-native-captions .caption-window,
+.tbt-twitch-hide-native-captions .caption-window *,
+.tbt-twitch-hide-native-captions .ytp-caption-segment {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  .tbt-twitch-popover {
+    background: rgba(20, 24, 22, 0.98);
+    color: #eef5f0;
+    border-color: rgba(255, 255, 255, 0.14);
+  }
+  .tbt-twitch-pop-head {
+    border-bottom-color: rgba(255, 255, 255, 0.12);
+  }
+  .tbt-twitch-pop-phonetic,
+  .tbt-twitch-vocab-status {
+    color: #9fb0a7;
+  }
+  .tbt-twitch-pop-label,
+  .tbt-twitch-pop-close {
+    background: #2a332e;
+    color: #d9e7df;
+  }
+  .tbt-twitch-audio {
+    color: #8bd1b2;
+  }
+}
+
+@media (max-width: 640px) {
+  :root {
+    --tbt-twitch-font-size: 16px;
+    --tbt-twitch-bottom: 16%;
+    --tbt-twitch-max-width: 94%;
+  }
+
+  .tbt-twitch-card {
+    padding: 7px 10px;
+    border-radius: 10px;
+  }
+
+  .tbt-twitch-popover {
+    left: 12px !important;
+    right: 12px !important;
+    width: auto !important;
+    max-height: 50vh;
+  }
+}
+
+
+html.tbt-twitch-shorts-mode-disabled .tbt-twitch-overlay {
+  max-width: min(var(--tbt-twitch-overlay-max-width, 360px), 360px, calc(100vw - 16px));
+}
+
+html.tbt-twitch-shorts-mode-disabled .tbt-twitch-card {
+  padding: 7px 11px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.62);
+}
+
+html.tbt-twitch-shorts-mode-disabled .tbt-twitch-original {
+  font-size: calc(var(--tbt-twitch-font-size) * 0.86);
+}
+
+html.tbt-twitch-shorts-mode-disabled .tbt-twitch-translation {
+  font-size: calc(var(--tbt-twitch-font-size) * 0.96);
+}
+
+html.tbt-twitch-shorts-mode-disabled .tbt-twitch-popover {
+  max-width: min(360px, calc(100vw - 24px));
+}
+
+.tbt-twitch-drag-handle {
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 0;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.78);
+  color: rgba(255, 255, 255, 0.9);
+  font: 700 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+  cursor: grab;
+  opacity: 0;
+  pointer-events: auto;
+  touch-action: none;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.24);
+  transition: opacity 120ms ease-out, transform 120ms ease-out;
+}
+
+.tbt-twitch-card:hover .tbt-twitch-drag-handle,
+.tbt-twitch-drag-handle:focus-visible,
+.tbt-twitch-overlay.tbt-twitch-dragging .tbt-twitch-drag-handle {
+  opacity: 1;
+}
+
+.tbt-twitch-drag-handle:active,
+.tbt-twitch-overlay.tbt-twitch-dragging .tbt-twitch-drag-handle {
+  cursor: grabbing;
+  transform: scale(1.04);
+}
+
+.tbt-twitch-overlay.tbt-twitch-dragging {
+  transition: none;
+  user-select: none;
+}
+
+.tbt-twitch-pop-image-section {
+  margin: -2px 0 2px;
+}
+
+.tbt-twitch-pop-image-link {
+  display: grid;
+  gap: 5px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.tbt-twitch-pop-image {
+  display: block;
+  width: 100%;
+  max-height: 160px;
+  object-fit: cover;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.tbt-twitch-pop-image-caption {
+  font-size: 11px;
+  line-height: 1.35;
+  color: #607068;
+}
+
+@media (prefers-color-scheme: dark) {
+  .tbt-twitch-pop-image-caption {
+    color: #9fb0a7;
+  }
+}
+
+.tbt-twitch-card {
+  position: relative;
+  cursor: grab;
+  touch-action: none;
+}
+
+.tbt-twitch-overlay.tbt-twitch-dragging .tbt-twitch-card,
+.tbt-twitch-overlay.tbt-twitch-dragging .tbt-twitch-word {
+  cursor: grabbing;
+}
+
+/* v0.49 Twitch in-player bilingual subtitle toggle.
+   Size is synchronized from Twitch's native CC button at runtime so this
+   extension control does not change the player's control-row alignment. */
+.tbt-twitch-player-toggle {
+  position: relative;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box !important;
+  width: var(--tbt-twitch-control-width, 38px) !important;
+  min-width: var(--tbt-twitch-control-width, 38px) !important;
+  height: var(--tbt-twitch-control-height, 38px) !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  opacity: .94;
+  align-self: center !important;
+  vertical-align: middle !important;
+  line-height: 1 !important;
+  color: rgba(255, 255, 255, .92);
+}
+
+.tbt-twitch-player-toggle-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  transition: color 160ms ease, opacity 160ms ease, transform 160ms ease, background-color 160ms ease;
+}
+
+.tbt-twitch-player-toggle-svg {
+  width: 25px;
+  height: 25px;
+  display: block;
+  overflow: visible;
+}
+
+.tbt-twitch-player-toggle-box,
+.tbt-twitch-player-toggle-badge,
+.tbt-twitch-player-toggle-line,
+.tbt-twitch-player-toggle-mark {
+  vector-effect: non-scaling-stroke;
+}
+
+.tbt-twitch-player-toggle-box,
+.tbt-twitch-player-toggle-badge {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+}
+
+.tbt-twitch-player-toggle-line,
+.tbt-twitch-player-toggle-mark {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tbt-twitch-player-toggle:hover .tbt-twitch-player-toggle-icon,
+.tbt-twitch-player-toggle:focus-visible .tbt-twitch-player-toggle-icon {
+  background: rgba(255,255,255,.12);
+  transform: none;
+}
+
+.tbt-twitch-player-toggle:focus-visible {
+  outline: none;
+}
+
+.tbt-twitch-player-toggle-on {
+  color: #39e7a1;
+}
+
+.tbt-twitch-player-toggle-on .tbt-twitch-player-toggle-icon {
+  filter: drop-shadow(0 0 4px rgba(57, 231, 161, .34));
+}
+
+.tbt-twitch-player-toggle-off {
+  color: rgba(255, 255, 255, .72);
+}
+
+.tbt-twitch-player-toggle-off .tbt-twitch-player-toggle-icon {
+  opacity: .76;
+}
+
+.tbt-twitch-player-toggle-off .tbt-twitch-player-toggle-badge,
+.tbt-twitch-player-toggle-off .tbt-twitch-player-toggle-mark {
+  opacity: .55;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tbt-twitch-player-toggle-icon {
+    transition: none !important;
+    transform: none !important;
+  }
+}
+
+
+/* v0.35 Shorts toggle placement */
+.tbt-twitch-shorts-toggle-host {
+  display: none !important;
+}
+
+html.tbt-twitch-shorts-mode-disabled .tbt-twitch-overlay {
+  z-index: 2147483644;
+}
+
+
+/* Twitch native captions remain as a data source but are visually hidden while bilingual captions are enabled. */
+.tbt-twitch-native-caption-source {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+/* Keep the extension toggle aligned with Twitch native player controls without capturing caption-source scans. */
+.tbt-twitch-player-toggle { flex: 0 0 var(--tbt-twitch-control-width, 38px) !important; cursor: pointer !important; }

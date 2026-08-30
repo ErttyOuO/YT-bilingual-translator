@@ -5,6 +5,7 @@
   const EXT = IS_BROWSER_PROMISE_API ? browser : chrome;
   const DEFAULT_SETTINGS = {
     enabled: true,
+    twitchEnabled: true,
     uiLanguage: 'zh-TW',
     targetLang: 'zh-TW',
     showOriginal: true,
@@ -19,6 +20,10 @@
     debug: false,
     translationProvider: 'auto-free',
     googleCloudApiKey: '',
+    geminiApiKey: '',
+    geminiPrimaryModel: '',
+    geminiFallbackModel: '',
+    geminiModelFailover: true,
     cloudV3ProxyUrl: '',
     libreTranslateUrl: 'https://libretranslate.com',
     libreTranslateApiKey: '',
@@ -30,15 +35,22 @@
     stableAutoCaptions: true,
     autoFailover: true,
     batchTranslationEnabled: true,
-    batchSize: 5,
+    batchSize: 8,
     transcriptFirstMode: true,
+    recalculateOnScroll: true,
+    recalculateOnViewportResize: true,
+    observePlayerResize: true,
     onboardingDone: false
   };
 
   const $ = (id) => document.getElementById(id);
   const I18N = globalThis.YTBBI_I18N;
+  const ONBOARDING_MODE = new URLSearchParams(globalThis.location?.search || '').get('onboarding');
+  const IS_FIRST_INSTALL_SETUP = ONBOARDING_MODE === 'install';
   const currentLang = () => $('uiLanguage')?.value || DEFAULT_SETTINGS.uiLanguage || 'zh-TW';
   const t = (key, vars) => I18N?.t(currentLang(), key, vars) || key;
+  let geminiModelsCache = [];
+
   const TARGET_LANGUAGES = [
     { code: 'zh-TW', label: '繁體中文' },
     { code: 'zh-CN', label: '简体中文' },
@@ -90,12 +102,17 @@
 
   const fields = [
     'enabled',
+    'twitchEnabled',
     'uiLanguage',
     'translationProvider',
     'autoFailover',
     'batchTranslationEnabled',
     'batchSize',
     'googleCloudApiKey',
+    'geminiApiKey',
+    'geminiPrimaryModel',
+    'geminiFallbackModel',
+    'geminiModelFailover',
     'cloudV3ProxyUrl',
     'libreTranslateUrl',
     'libreTranslateApiKey',
@@ -116,6 +133,9 @@
     'fontSize',
     'bottomPercent',
     'maxWidthPercent',
+    'recalculateOnScroll',
+    'recalculateOnViewportResize',
+    'observePlayerResize',
     'debug'
   ];
 
@@ -149,8 +169,10 @@
   const explainError = (message) => {
     if (!message) return t('unknownError');
     if (message === 'NO_GOOGLE_CLOUD_API_KEY') return t('errNoCloudKey');
+    if (message === 'NO_GEMINI_API_KEY') return t('errNoGeminiKey');
+    if (message === 'NO_GEMINI_PRIMARY_MODEL') return t('errNoGeminiModel');
     if (message === 'NO_CLOUD_V3_PROXY_URL') return t('errNoCloudV3');
-    if (/API key not valid|API_KEY_INVALID/i.test(message)) return t('errInvalidKey');
+    if (/API key not valid|API_KEY_INVALID|invalid api key/i.test(message)) return t($('translationProvider')?.value === 'gemini' ? 'errInvalidGeminiKey' : 'errInvalidKey');
     if (/billing|Billing/i.test(message)) return t('errBilling');
     if (/disabled|has not been used/i.test(message)) return t('errApiDisabled');
     if (/All translation providers failed/i.test(message)) return t('errAllProviders');
@@ -173,6 +195,7 @@
       'google-html': 'providerHelpGoogleHtml',
       'microsoft-edge': 'providerHelpMicrosoft',
       'google-free': 'providerHelpGoogleFree',
+      'gemini': 'providerHelpGemini',
       'cloud-v2': 'providerHelpCloudV2',
       'cloud-v3-proxy': 'providerHelpCloudV3',
       'libretranslate': 'providerHelpLibre',
@@ -182,14 +205,190 @@
     if (help) help.textContent = text;
   };
 
+
+  const setGeminiStatus = (text, state = '') => {
+    const node = $('geminiStatus');
+    if (!node) return;
+    node.textContent = text || '';
+    if (state) node.dataset.state = state;
+    else delete node.dataset.state;
+  };
+
+  const ensureGeminiModelOption = (select, value, allowEmpty = false) => {
+    if (!select) return;
+    const model = String(value || '').trim().replace(/^models\//, '');
+    if (!model) {
+      if (allowEmpty) select.value = '';
+      return;
+    }
+    let option = Array.from(select.options).find((item) => item.value === model);
+    if (!option) {
+      option = document.createElement('option');
+      option.value = model;
+      option.textContent = `${model} (${t('geminiSavedModel')})`;
+      select.appendChild(option);
+    }
+    select.value = model;
+  };
+
+  const getGeminiModelById = (id) => geminiModelsCache.find((model) => model.id === String(id || '').replace(/^models\//, ''));
+
+  const updateGeminiModelInfo = () => {
+    const render = (selectId, infoId) => {
+      const selected = $(selectId)?.value || '';
+      const info = $(infoId);
+      if (!info) return;
+      const model = getGeminiModelById(selected);
+      if (!model) {
+        info.textContent = selected ? t('geminiModelNotLoaded') : '';
+        return;
+      }
+      const limits = [];
+      if (model.inputTokenLimit) limits.push(`in ${model.inputTokenLimit}`);
+      if (model.outputTokenLimit) limits.push(`out ${model.outputTokenLimit}`);
+      info.textContent = [model.displayName || model.id, limits.join(' / '), model.thinking ? t('geminiThinkingModel') : '']
+        .filter(Boolean)
+        .join(' · ');
+    };
+    render('geminiPrimaryModel', 'geminiPrimaryModelInfo');
+    render('geminiFallbackModel', 'geminiFallbackModelInfo');
+  };
+
+  const populateGeminiModels = (models, selectedPrimary = '', selectedFallback = '') => {
+    geminiModelsCache = Array.isArray(models) ? models.slice() : [];
+    const primary = $('geminiPrimaryModel');
+    const fallback = $('geminiFallbackModel');
+    if (!primary || !fallback) return;
+
+    const oldPrimary = selectedPrimary || primary.value;
+    const oldFallback = selectedFallback || fallback.value;
+    primary.textContent = '';
+    fallback.textContent = '';
+
+    const primaryPlaceholder = document.createElement('option');
+    primaryPlaceholder.value = '';
+    primaryPlaceholder.textContent = t('geminiChooseModel');
+    primary.appendChild(primaryPlaceholder);
+
+    const fallbackNone = document.createElement('option');
+    fallbackNone.value = '';
+    fallbackNone.textContent = t('geminiNoFallback');
+    fallback.appendChild(fallbackNone);
+
+    geminiModelsCache.forEach((model) => {
+      const label = model.displayName && model.displayName !== model.id
+        ? `${model.displayName} — ${model.id}`
+        : model.id;
+      const p = document.createElement('option');
+      p.value = model.id;
+      p.textContent = label;
+      primary.appendChild(p);
+      const f = p.cloneNode(true);
+      fallback.appendChild(f);
+    });
+
+    if (oldPrimary && geminiModelsCache.some((model) => model.id === oldPrimary)) primary.value = oldPrimary;
+    else if (geminiModelsCache.length) primary.value = geminiModelsCache[0].id;
+
+    if (oldFallback && oldFallback !== primary.value && geminiModelsCache.some((model) => model.id === oldFallback)) {
+      fallback.value = oldFallback;
+    } else {
+      const next = geminiModelsCache.find((model) => model.id !== primary.value);
+      fallback.value = next?.id || '';
+    }
+    updateGeminiModelInfo();
+  };
+
+  const loadGeminiModels = async () => {
+    const apiKey = $('geminiApiKey')?.value.trim() || '';
+    if (!apiKey) {
+      setGeminiStatus(t('errNoGeminiKey'), 'error');
+      return null;
+    }
+    setGeminiStatus(t('geminiLoadingModels'));
+    try {
+      const response = await sendMessage({ type: 'YTBBI_GEMINI_LIST_MODELS', apiKey });
+      if (!response?.ok) throw new Error(response?.error || t('testFailed'));
+      const primary = $('geminiPrimaryModel')?.value || '';
+      const fallback = $('geminiFallbackModel')?.value || '';
+      populateGeminiModels(response.models || [], primary, fallback);
+      setGeminiStatus(t('geminiModelsLoaded', { count: response.count || response.models?.length || 0 }));
+      return response.models || [];
+    } catch (error) {
+      setGeminiStatus(t('geminiKeyTestFailed', { error: explainError(error.message) }), 'error');
+      return null;
+    }
+  };
+
+  const saveGeminiSettings = async () => {
+    try {
+      await save(true);
+      setGeminiStatus(t('geminiSaved'));
+      setStatus(t('statusSaved'));
+    } catch (error) {
+      setGeminiStatus(explainError(error.message), 'error');
+    }
+  };
+
+  const testGeminiSettings = async () => {
+    const apiKey = $('geminiApiKey')?.value.trim() || '';
+    const primaryModel = $('geminiPrimaryModel')?.value || '';
+    const fallbackModel = $('geminiFallbackModel')?.value || '';
+    if (!apiKey) {
+      setGeminiStatus(t('errNoGeminiKey'), 'error');
+      return;
+    }
+    if (!primaryModel) {
+      setGeminiStatus(t('errNoGeminiModel'), 'error');
+      return;
+    }
+
+    setGeminiStatus(t('geminiTestingModels'));
+    try {
+      const response = await sendMessage({
+        type: 'YTBBI_GEMINI_TEST',
+        apiKey,
+        primaryModel,
+        fallbackModel,
+        targetLang: $('targetLang')?.value || DEFAULT_SETTINGS.targetLang
+      });
+      if (!response?.ok) throw new Error(response?.error || t('testFailed'));
+      if (Array.isArray(response.models) && response.models.length) {
+        populateGeminiModels(response.models, primaryModel, fallbackModel);
+      }
+      const lines = [t('geminiKeyValid', { count: response.modelCount || 0 })];
+      if (response.primary) {
+        lines.push(response.primary.ok
+          ? t('geminiPrimaryTestOk', { model: response.primary.model })
+          : t('geminiPrimaryTestFailed', { model: response.primary.model, error: explainError(response.primary.error) }));
+      }
+      if (response.fallback) {
+        lines.push(response.fallback.ok
+          ? t('geminiFallbackTestOk', { model: response.fallback.model })
+          : t('geminiFallbackTestFailed', { model: response.fallback.model, error: explainError(response.fallback.error) }));
+      }
+      if (response.translatedText) lines.push(t('geminiTestResult', { text: response.translatedText }));
+      const hasFailure = (response.primary && !response.primary.ok) || (response.fallback && !response.fallback.ok);
+      const failoverWorked = response.primary && !response.primary.ok && response.fallback?.ok;
+      setGeminiStatus(lines.join('\n'), failoverWorked ? 'warn' : (hasFailure ? 'warn' : ''));
+    } catch (error) {
+      setGeminiStatus(t('geminiKeyTestFailed', { error: explainError(error.message) }), 'error');
+    }
+  };
+
   const readForm = () => ({
     enabled: $('enabled').checked,
+    twitchEnabled: $('twitchEnabled') ? $('twitchEnabled').checked : true,
     uiLanguage: $('uiLanguage') ? $('uiLanguage').value : 'zh-TW',
     translationProvider: $('translationProvider').value,
     autoFailover: $('autoFailover').checked,
     batchTranslationEnabled: $('batchTranslationEnabled').checked,
     batchSize: Number($('batchSize').value),
     googleCloudApiKey: $('googleCloudApiKey').value.trim(),
+    geminiApiKey: $('geminiApiKey')?.value.trim() || '',
+    geminiPrimaryModel: $('geminiPrimaryModel')?.value || '',
+    geminiFallbackModel: $('geminiFallbackModel')?.value || '',
+    geminiModelFailover: $('geminiModelFailover') ? $('geminiModelFailover').checked : true,
     cloudV3ProxyUrl: $('cloudV3ProxyUrl').value.trim(),
     libreTranslateUrl: $('libreTranslateUrl').value.trim(),
     libreTranslateApiKey: $('libreTranslateApiKey').value.trim(),
@@ -210,17 +409,25 @@
     fontSize: Number($('fontSize').value),
     bottomPercent: Number($('bottomPercent').value),
     maxWidthPercent: Number($('maxWidthPercent').value),
+    recalculateOnScroll: $('recalculateOnScroll') ? $('recalculateOnScroll').checked : true,
+    recalculateOnViewportResize: $('recalculateOnViewportResize') ? $('recalculateOnViewportResize').checked : true,
+    observePlayerResize: $('observePlayerResize') ? $('observePlayerResize').checked : true,
     debug: $('debug').checked
   });
 
   const writeForm = (settings) => {
     $('enabled').checked = !!settings.enabled;
+    if ($('twitchEnabled')) $('twitchEnabled').checked = settings.twitchEnabled !== false;
     if ($('uiLanguage')) $('uiLanguage').value = settings.uiLanguage || 'zh-TW';
     $('translationProvider').value = settings.translationProvider || 'auto-free';
     $('autoFailover').checked = settings.autoFailover !== false;
     $('batchTranslationEnabled').checked = settings.batchTranslationEnabled !== false;
-    $('batchSize').value = settings.batchSize || 5;
+    $('batchSize').value = settings.batchSize || 8;
     $('googleCloudApiKey').value = settings.googleCloudApiKey || '';
+    if ($('geminiApiKey')) $('geminiApiKey').value = settings.geminiApiKey || '';
+    if ($('geminiModelFailover')) $('geminiModelFailover').checked = settings.geminiModelFailover !== false;
+    if ($('geminiPrimaryModel')) ensureGeminiModelOption($('geminiPrimaryModel'), settings.geminiPrimaryModel || '', false);
+    if ($('geminiFallbackModel')) ensureGeminiModelOption($('geminiFallbackModel'), settings.geminiFallbackModel || '', true);
     $('cloudV3ProxyUrl').value = settings.cloudV3ProxyUrl || '';
     $('libreTranslateUrl').value = settings.libreTranslateUrl || 'https://libretranslate.com';
     $('libreTranslateApiKey').value = settings.libreTranslateApiKey || '';
@@ -243,15 +450,18 @@
     $('fontSize').value = settings.fontSize;
     $('bottomPercent').value = settings.bottomPercent;
     $('maxWidthPercent').value = settings.maxWidthPercent;
+    if ($('recalculateOnScroll')) $('recalculateOnScroll').checked = settings.recalculateOnScroll !== false;
+    if ($('recalculateOnViewportResize')) $('recalculateOnViewportResize').checked = settings.recalculateOnViewportResize !== false;
+    if ($('observePlayerResize')) $('observePlayerResize').checked = settings.observePlayerResize !== false;
     $('debug').checked = !!settings.debug;
     updateRangeLabels();
   };
 
-  const notifyActiveYouTubeTab = async () => {
+  const notifyActiveSupportedTab = async () => {
     try {
       const tabs = await callMaybePromise(EXT.tabs.query, EXT.tabs, { active: true, currentWindow: true });
       const tab = tabs && tabs[0];
-      if (!tab || !tab.id || !/youtube\.com/.test(tab.url || '')) return;
+      if (!tab || !tab.id || !/(youtube\.com|twitch\.tv)/.test(tab.url || '')) return;
       await callMaybePromise(EXT.tabs.sendMessage, EXT.tabs, tab.id, { type: 'YTBBI_SETTINGS_UPDATED' });
     } catch (_error) {
       // Content script may not be available on the current tab yet; storage change is enough.
@@ -267,7 +477,7 @@
       $('showTranslation').checked = true;
     }
     await storageSet(settings);
-    await notifyActiveYouTubeTab();
+    await notifyActiveSupportedTab();
     if (!silent) setStatus(t('statusSaved'));
   };
 
@@ -275,7 +485,7 @@
     await storageSet(DEFAULT_SETTINGS);
     writeForm(DEFAULT_SETTINGS);
     applyI18n();
-    await notifyActiveYouTubeTab();
+    await notifyActiveSupportedTab();
     setStatus(t('statusReset'));
   };
 
@@ -344,7 +554,7 @@
     setStatus(t('statusCleared'));
   };
 
-  const panelOrder = ['panel-general', 'panel-translation', 'panel-subtitle', 'panel-learning', 'panel-advanced'];
+  const panelOrder = ['panel-general', 'panel-translation', 'panel-subtitle', 'panel-learning', 'panel-performance', 'panel-advanced'];
 
   const activatePanel = (panelId) => {
     if (!panelId) return;
@@ -395,7 +605,7 @@
   };
 
   const showOnboardingIfNeeded = (settings) => {
-    if (!$('onboarding') || settings.onboardingDone) return;
+    if (!$('onboarding') || (settings.onboardingDone && !IS_FIRST_INSTALL_SETUP)) return;
     fillTargetLanguageSelects();
     $('onboardingUiLanguage').value = settings.uiLanguage || DEFAULT_SETTINGS.uiLanguage;
     $('onboardingTargetLang').value = settings.targetLang || DEFAULT_SETTINGS.targetLang;
@@ -418,8 +628,13 @@
     applyI18n();
     await storageSet({ ...readForm(), uiLanguage: uiLang, targetLang: target, onboardingDone: true });
     if ($('onboarding')) $('onboarding').hidden = true;
-    await notifyActiveYouTubeTab();
+    await notifyActiveSupportedTab();
     setStatus(t('statusSaved'));
+    if (IS_FIRST_INSTALL_SETUP) {
+      setTimeout(() => {
+        try { globalThis.close(); } catch (_error) { /* Keep the settings page open if closing is unavailable. */ }
+      }, 500);
+    }
   };
 
   const testTranslation = async () => {
@@ -479,6 +694,7 @@
         updateRangeLabels();
         if (field === 'uiLanguage') { applyI18n(); renderVocabulary(); }
         if (field === 'translationProvider') updateProviderUi();
+        if (field === 'geminiPrimaryModel' || field === 'geminiFallbackModel') updateGeminiModelInfo();
         save();
       });
       if (el.type === 'range') {
@@ -489,6 +705,18 @@
     $('save').addEventListener('click', () => save());
     $('reset').addEventListener('click', reset);
     $('testTranslation').addEventListener('click', testTranslation);
+    $('loadGeminiModels')?.addEventListener('click', loadGeminiModels);
+    $('saveGeminiSettings')?.addEventListener('click', saveGeminiSettings);
+    $('testGeminiSettings')?.addEventListener('click', testGeminiSettings);
+    $('toggleGeminiApiKey')?.addEventListener('click', () => {
+      const input = $('geminiApiKey');
+      if (!input) return;
+      const visible = input.type === 'text';
+      input.type = visible ? 'password' : 'text';
+      $('toggleGeminiApiKey').textContent = t(visible ? 'showKey' : 'hideKey');
+    });
+    $('geminiPrimaryModel')?.addEventListener('change', updateGeminiModelInfo);
+    $('geminiFallbackModel')?.addEventListener('change', updateGeminiModelInfo);
     $('exportVocab').addEventListener('click', exportVocabulary);
     $('clearVocab').addEventListener('click', clearVocabulary);
 
