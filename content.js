@@ -30,6 +30,7 @@
     showWordUnderline: true,
     learningMode: 'en-to-zh',
     stableAutoCaptions: true,
+    mergeManualCaptions: true,
     autoFailover: true,
     batchTranslationEnabled: true,
     batchSize: 8,
@@ -40,6 +41,18 @@
   });
 
   const CAPTION_SOURCE_LANG = 'auto';
+  const LANG = globalThis.YTBBI_LANG;
+  // Manual captions often split one sentence over several cues. Merge them so
+  // the translator sees whole sentences (word order differs between languages).
+  const MANUAL_MERGE_MAX_GAP_MS = 1500;
+  const MANUAL_MERGE_MAX_DURATION_MS = 10000;
+  const MANUAL_MERGE_MAX_WORDS = 32;
+  const MANUAL_MERGE_MAX_CJK_CHARS = 60;
+  const MANUAL_MERGE_MAX_CHARS = 220;
+  // A cue stays on screen until the next one only across short gaps; during
+  // long silences or music it disappears shortly after it was spoken.
+  const CUE_BRIDGE_MAX_GAP_MS = 1500;
+  const CUE_LINGER_MS = 700;
   const PREFETCH_AHEAD_BASE_MS = 90000;
   const PREFETCH_AHEAD_MAX_MS = 150000;
   const PREFETCH_RATE_EXTRA_PER_1X_MS = 60000;
@@ -47,13 +60,15 @@
   const PREFETCH_AHEAD_MAX_COUNT = 100;
   const PREFETCH_DEBOUNCE_MS = 80;
   const PREFETCH_RETRY_DELAYS_MS = Object.freeze([2000, 5000, 15000]);
+  const DISPLAY_RETRY_DELAYS_MS = Object.freeze([1500, 4000]);
+  const TRANSCRIPT_TIMEOUT_MS = 8000;
   // v0.52: Visible-DOM captions are emergency fallback only. Do not commit
   // short ASR fragments just because the DOM stopped changing for ~1 second.
   // YouTube VOD timed-text is assembled ahead of playback and remains the
   // authoritative timeline whenever it is available.
-  const VISIBLE_STABLE_DELAY_MS = 1200;
+  const VISIBLE_STABLE_DELAY_MS = 900;
   const VISIBLE_MIN_WORDS_FOR_SOFT_BOUNDARY = 6;
-  const VISIBLE_MAX_WAIT_MS = 6000;
+  const VISIBLE_MAX_WAIT_MS = 2500;
   const VISIBLE_MAX_CHARS = 170;
   const VISIBLE_MAX_WORDS = 24;
   const VISIBLE_STRONG_BOUNDARY_CHARS = new Set(['.', '。', '!', '！', '?', '？']);
@@ -140,6 +155,8 @@
     transcriptKey: '',
     transcriptLoadingKey: '',
     transcriptLoadStartedAt: 0,
+    transcriptRetryAfter: 0,
+    transcriptFetchController: null,
     transcriptSeq: 0,
     transcriptCues: [],
     transcriptRawCues: [],
@@ -152,6 +169,7 @@
     transcriptPrefetchRetryAfter: new Map(),
     transcriptPrefetchRetryAttempts: new Map(),
     prefetchTimer: null,
+    prefetchGeneration: 0,
     playbackTimer: null,
     playerToggleTimer: null,
     visibleBufferText: '',
@@ -182,6 +200,9 @@
     lastRenderedTranslation: '',
     lastRenderedStatus: '',
     translationStatusTimer: 0,
+    translationRetryTimer: 0,
+    translationRetryAfter: 0,
+    translationRetryAttempts: 0,
     initialized: false,
     activeVideoId: '',
     activePlayerElement: null,
@@ -216,9 +237,7 @@
     .trim();
 
   const normalizeTranslationKeyText = (text) => {
-    const normalized = normalizeText(text).toLowerCase();
-    const compact = normalized.replace(/[\s\p{P}\p{S}]+/gu, '');
-    return compact || normalized;
+    return normalizeText(text);
   };
 
   const makeDisplayTranslationKey = (text) => `${CAPTION_SOURCE_LANG}|${getCaptionTargetLang()}|${normalizeTranslationKeyText(text)}`;
@@ -559,6 +578,10 @@
   };
 
   const clearCaptionDisplayState = () => {
+    state.requestSeq += 1;
+    clearTimeout(state.translationRetryTimer);
+    state.translationRetryAfter = 0;
+    state.translationRetryAttempts = 0;
     state.lastCaptionText = '';
     state.lastTranslatedText = '';
     state.currentStableCaptionKey = '';
@@ -636,8 +659,10 @@
 
   const deactivateForUnsupportedPage = () => {
     clearTimeout(state.textTimer);
+    state.textTimer = null;
     clearTimeout(state.playerToggleTimer);
     clearTimeout(state.prefetchTimer);
+    state.prefetchTimer = null;
     clearCaptionDisplayState();
     closeLookupPopover();
     destroyOverlay();
@@ -737,7 +762,17 @@
       button = document.createElement('button');
       button.type = 'button';
       button.className = 'ytp-button ytbbi-player-toggle';
-      button.innerHTML = '<span class="ytbbi-player-toggle-icon" aria-hidden="true"><svg class="ytbbi-player-toggle-svg" viewBox="0 0 36 36" focusable="false"><rect class="ytbbi-player-toggle-box" x="8.5" y="11.5" width="19" height="13" rx="3"></rect><circle class="ytbbi-player-toggle-badge" cx="25.5" cy="14.5" r="2.2"></circle><path class="ytbbi-player-toggle-line" d="M12 16h7"></path><path class="ytbbi-player-toggle-line" d="M12 20h11"></path><path class="ytbbi-player-toggle-mark" d="M24.2 14.5h2.6"></path></svg></span>';
+      const icon = document.createElement('img');
+      icon.className = 'ytbbi-player-toggle-image';
+      icon.src = EXT.runtime.getURL('icons/brand-cc-48.png');
+      icon.alt = '';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.draggable = false;
+      const iconContainer = document.createElement('span');
+      iconContainer.className = 'ytbbi-player-toggle-icon';
+      iconContainer.setAttribute('aria-hidden', 'true');
+      iconContainer.appendChild(icon);
+      button.appendChild(iconContainer);
       button.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -1562,7 +1597,22 @@
     }
   };
 
+  const invalidateUpcomingPrefetch = () => {
+    state.prefetchGeneration += 1;
+    state.transcriptPrefetchingKeys.clear();
+    clearTimeout(state.prefetchTimer);
+    state.prefetchTimer = null;
+    sendMessage({ type: 'YTBBI_CANCEL_PREFETCH', contextId: `${getVideoId()}|${state.prefetchGeneration}` }).catch(() => undefined);
+  };
+
   const resetTranscriptState = () => {
+    state.requestSeq += 1;
+    state.lastCaptionText = '';
+    state.lastTranslatedText = '';
+    state.transcriptFetchController?.abort();
+    state.transcriptFetchController = null;
+    state.transcriptRetryAfter = 0;
+    invalidateUpcomingPrefetch();
     state.transcriptKey = '';
     state.transcriptLoadingKey = '';
     state.transcriptLoadStartedAt = 0;
@@ -1583,7 +1633,11 @@
     state.lastRenderedTranslation = '';
     state.lastRenderedStatus = '';
     clearTimeout(state.translationStatusTimer);
+    clearTimeout(state.translationRetryTimer);
+    state.translationRetryAfter = 0;
+    state.translationRetryAttempts = 0;
     clearTimeout(state.prefetchTimer);
+    state.prefetchTimer = null;
     resetVisibleBufferState();
   };
 
@@ -1688,7 +1742,8 @@
       try {
         const src = new URL(item);
         const lang = src.searchParams.get('lang');
-        return !lang || !url.searchParams.get('lang') || lang === url.searchParams.get('lang');
+        return src.searchParams.get('v') === url.searchParams.get('v')
+          && (!lang || !url.searchParams.get('lang') || lang === url.searchParams.get('lang'));
       } catch (_error) {
         return false;
       }
@@ -1854,7 +1909,20 @@
     return isAsr ? 'asr-standard' : 'standard';
   };
 
-  const endsWithSegmentBoundary = (text) => /[.!?。！？…」』”")]$/.test(normalizeText(text));
+  // Titles and Latin abbreviations end with "." but do not end a sentence.
+  const NON_TERMINAL_ABBREVIATION = /(?:^|[\s(\[“"'])(?:mr|mrs|ms|dr|prof|sr|jr|st|vs|etc|e\.g|i\.e|approx|vol|fig|inc|ltd|corp|dept|gov|sgt|capt|rev|mt|jan|feb|apr|jun|jul|aug|sept|oct|nov)\.$/i;
+  const INITIALISM = /(?:^|[\s(])(?:[A-Za-z]\.){2,3}$/;
+
+  const endsWithAbbreviation = (text) => {
+    const value = normalizeText(text);
+    if (!value.endsWith('.')) return false;
+    return NON_TERMINAL_ABBREVIATION.test(value) || INITIALISM.test(value);
+  };
+
+  const endsWithSegmentBoundary = (text) => {
+    const value = normalizeText(text);
+    return /[.!?。！？…」』”")]$/.test(value) && !endsWithAbbreviation(value);
+  };
 
   const endsWithSoftBoundary = (text) => /[,，、]$/.test(normalizeText(text));
 
@@ -1882,11 +1950,16 @@
     return durationMs >= 6500 && (segmentationHasCjk(value) || segmentationWordCount(value) >= 6);
   };
 
+  // Han and Kana are written without spaces; Hangul and Latin scripts use them.
+  const NO_SPACE_SCRIPT_END = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef]$/u;
+  const NO_SPACE_SCRIPT_START = /^[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef]/u;
+
   const joinTimedCaptionText = (left, right) => {
     const a = normalizeText(left);
     const b = normalizeText(right);
     if (!a) return b;
     if (!b) return a;
+    if (NO_SPACE_SCRIPT_END.test(a) && NO_SPACE_SCRIPT_START.test(b)) return `${a}${b}`;
     if (/^[,，、.;:!?。！？…)\]」』”]/u.test(b)) return normalizeText(`${a}${b}`);
     if (/^['’]/u.test(b) && /[\p{L}\p{N}]$/u.test(a)) return normalizeText(`${a}${b}`);
     return normalizeText(`${a} ${b}`)
@@ -1992,7 +2065,10 @@
 
 
 
-  const endsWithSentencePunctuation = (text) => /[.!?。！？…」』”\)]$/.test(normalizeText(text));
+  const endsWithSentencePunctuation = (text) => {
+    const value = normalizeText(text);
+    return /[.!?。！？…」』”\)]$/.test(value) && !endsWithAbbreviation(value);
+  };
 
   const hasCjk = (text) => /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(String(text || ''));
 
@@ -2114,6 +2190,50 @@
   };
 
 
+  const isBracketedSoundCue = (text) => /^[\[(（【♪].*[\])）】♪]$/u.test(normalizeText(text));
+
+  const exceedsManualMergeLimit = (text, durationMs) => {
+    const value = normalizeText(text);
+    if (value.length > MANUAL_MERGE_MAX_CHARS || durationMs > MANUAL_MERGE_MAX_DURATION_MS) return true;
+    if (segmentationHasCjk(value)) return value.replace(/\s+/g, '').length > MANUAL_MERGE_MAX_CJK_CHARS;
+    return segmentationWordCount(value) > MANUAL_MERGE_MAX_WORDS;
+  };
+
+  const mergeManualCues = (rawCues) => {
+    const cues = (Array.isArray(rawCues) ? rawCues : [])
+      .filter((cue) => cue?.text && Number.isFinite(cue.startMs))
+      .sort((a, b) => a.startMs - b.startMs);
+    const merged = [];
+    let current = null;
+    const flush = () => {
+      if (!current) return;
+      merged.push({ ...current, key: `${current.startMs}|manual-sentence|${current.text}` });
+      current = null;
+    };
+    for (const cue of cues) {
+      const text = normalizeText(cue.text);
+      if (!text) continue;
+      if (current) {
+        const gap = cue.startMs - current.endMs;
+        const joined = joinTimedCaptionText(current.text, text);
+        const canMerge = !endsWithSegmentBoundary(current.text)
+          && !isBracketedSoundCue(current.text) && !isBracketedSoundCue(text)
+          && !/^[-–—]\s/.test(text)
+          && gap <= MANUAL_MERGE_MAX_GAP_MS
+          && !exceedsManualMergeLimit(joined, Math.max(current.endMs, cue.endMs) - current.startMs);
+        if (canMerge) {
+          current.text = joined;
+          current.endMs = Math.max(current.endMs, cue.endMs);
+          continue;
+        }
+        flush();
+      }
+      current = { startMs: cue.startMs, endMs: cue.endMs, text };
+    }
+    flush();
+    return merged;
+  };
+
   const normalizeTranscriptCueWindows = (cues) => {
     const normalized = (Array.isArray(cues) ? cues : [])
       .filter((cue) => cue?.text && Number.isFinite(cue.startMs))
@@ -2129,10 +2249,12 @@
       // but never let a previous cue linger for multiple seconds after its
       // actual token window. A tiny overlap absorbs timer jitter.
       if (next) {
-        const bridgeEnd = Math.max(naturalEnd, next.startMs - 100);
-        cue.endMs = Math.min(next.startMs + 120, bridgeEnd);
+        const gapToNext = next.startMs - naturalEnd;
+        cue.endMs = gapToNext <= CUE_BRIDGE_MAX_GAP_MS
+          ? Math.min(next.startMs + 120, Math.max(naturalEnd, next.startMs - 100))
+          : Math.min(naturalEnd + CUE_LINGER_MS, next.startMs - 100);
       } else {
-        cue.endMs = naturalEnd;
+        cue.endMs = naturalEnd + CUE_LINGER_MS;
       }
       cue.key = cue.key || `${cue.startMs}|${cue.text}`;
     }
@@ -2141,7 +2263,7 @@
   };
 
 
-  const fetchTranscriptCues = async (track) => {
+  const fetchTranscriptCues = async (track, signal) => {
     const attempts = [];
     try {
       const url = addTimedtextTokenHints(new URL(track.baseUrl));
@@ -2154,6 +2276,9 @@
     for (const observed of state.observedTimedtextUrls) {
       try {
         const url = new URL(observed);
+        if (url.searchParams.get('v') !== getVideoId()) continue;
+        if (url.searchParams.get('lang') && track.languageCode && url.searchParams.get('lang') !== track.languageCode) continue;
+        if ((url.searchParams.get('kind') || '') !== (track.kind || '')) continue;
         url.searchParams.set('fmt', 'json3');
         if (track.languageCode && !url.searchParams.get('lang')) url.searchParams.set('lang', track.languageCode);
         attempts.push(url.toString());
@@ -2164,22 +2289,36 @@
 
     let lastError = null;
     for (const requestUrl of Array.from(new Set(attempts))) {
+      if (signal?.aborted) throw new Error('Timedtext fetch cancelled');
+      const controller = new AbortController();
+      const cancel = () => controller.abort();
+      signal?.addEventListener('abort', cancel, { once: true });
+      let timer;
       try {
-        const response = await fetch(requestUrl, {
-          method: 'GET',
-          credentials: 'omit',
-          cache: 'force-cache'
-        });
-        if (!response.ok) throw new Error(`Timedtext fetch failed: ${response.status}`);
-        const data = await response.json();
+        const data = await Promise.race([
+          (async () => {
+            const response = await fetch(requestUrl, {
+              method: 'GET', credentials: 'omit', cache: 'force-cache', signal: controller.signal
+            });
+            if (!response.ok) throw new Error(`Timedtext fetch failed: ${response.status}`);
+            return response.json();
+          })(),
+          new Promise((_resolve, reject) => {
+            timer = setTimeout(() => { controller.abort(); reject(new Error('Timedtext fetch timeout')); }, TRANSCRIPT_TIMEOUT_MS);
+          })
+        ]);
         const format = detectYouTubeCaptionFormat(data, track);
         const rawCues = parseJson3Transcript(data);
+        if (!rawCues.length) throw new Error('Timedtext returned no captions');
         const tokenSegments = (format === 'scrolling-asr' || format === 'karaoke-asr')
           ? buildStableSegmentsFromTokens(extractTimedTokensFromJson3(data))
           : [];
         return { data, rawCues, tokenSegments, format, requestUrl };
       } catch (error) {
         lastError = error;
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', cancel);
       }
     }
     throw lastError || new Error('Timedtext fetch failed: no candidate URLs');
@@ -2191,9 +2330,7 @@
     if (state.transcriptVideoId && state.transcriptVideoId !== videoId) resetTranscriptState();
 
     const detected = detectCaptionLanguage(captionText || state.lastCaptionText);
-    const requestedKey = `${videoId}|${detected}`;
-    if (state.transcriptKey === requestedKey && state.transcriptCues.length) return;
-    if (state.transcriptLoadingKey === requestedKey) return;
+    if (Date.now() < state.transcriptRetryAfter) return;
 
     let tracks = getCaptionTracks();
     if (!tracks.length) {
@@ -2204,30 +2341,43 @@
 
     const track = chooseCaptionTrack(tracks, captionText || state.lastCaptionText);
     if (!track?.baseUrl) return;
+    const trackUrl = new URL(track.baseUrl);
+    // Identify the actual track, without rotating URL signatures/tokens.
+    const requestedKey = JSON.stringify([videoId, track.vssId || '', track.languageCode || '', track.kind || '',
+      trackUrl.searchParams.get('name') || '', trackUrl.searchParams.get('tlang') || '']);
+    if (state.transcriptKey === requestedKey && state.transcriptCues.length) return;
+    if (state.transcriptLoadingKey === requestedKey) return;
+    if (state.transcriptKey && state.transcriptKey !== requestedKey) resetTranscriptState();
+    state.transcriptFetchController?.abort();
+    const controller = new AbortController();
+    state.transcriptFetchController = controller;
 
     const seq = ++state.transcriptSeq;
     state.transcriptLoadingKey = requestedKey;
     state.transcriptLoadStartedAt = Date.now();
 
     try {
-      const fetched = await fetchTranscriptCues(track);
+      const fetched = await fetchTranscriptCues(track, controller.signal);
       if (seq !== state.transcriptSeq) return;
       if (getVideoId() && getVideoId() !== videoId) return;
       const rawCues = fetched.rawCues || [];
       const trackName = normalizeText(track.name?.simpleText || track.name?.runs?.map((run) => run.text).join('') || '');
       const isAutoTrack = track.kind === 'asr' || /auto|自動|自動產生|automatic|generated|asr/i.test(`${trackName} ${fetched.format || ''}`);
-      const cues = normalizeTranscriptCueWindows(
-        isAutoTrack && state.settings.stableAutoCaptions !== false
-          ? ((fetched.tokenSegments && fetched.tokenSegments.length >= 3) ? fetched.tokenSegments : mergeAutoGeneratedCues(rawCues))
-          : rawCues
-      );
+      let segmented = rawCues;
+      if (isAutoTrack && state.settings.stableAutoCaptions !== false) {
+        segmented = (fetched.tokenSegments && fetched.tokenSegments.length >= 3) ? fetched.tokenSegments : mergeAutoGeneratedCues(rawCues);
+      } else if (!isAutoTrack && state.settings.mergeManualCaptions !== false) {
+        segmented = mergeManualCues(rawCues);
+      }
+      const cues = normalizeTranscriptCueWindows(segmented);
       state.transcriptKey = requestedKey;
       state.transcriptLoadingKey = '';
       state.transcriptLoadStartedAt = 0;
+      state.transcriptRetryAfter = 0;
       state.transcriptVideoId = videoId;
       state.transcriptRawCues = rawCues;
       state.transcriptCues = cues;
-      state.transcriptTrackLang = track.languageCode || detected || 'auto';
+      state.transcriptTrackLang = trackUrl.searchParams.get('tlang') || track.languageCode || detected || 'auto';
       state.transcriptIsAuto = isAutoTrack;
       state.currentStableCaptionKey = '';
       state.transcriptPrefetchedKeys = new Set();
@@ -2240,7 +2390,10 @@
       if (seq !== state.transcriptSeq) return;
       state.transcriptLoadingKey = '';
       state.transcriptLoadStartedAt = 0;
+      state.transcriptRetryAfter = Date.now() + 3000;
       log('timedtext unavailable', error);
+    } finally {
+      if (state.transcriptFetchController === controller) state.transcriptFetchController = null;
     }
   };
 
@@ -2297,7 +2450,7 @@
     const overlap = getWordOverlap(a, b);
     if (overlap.tailHead >= 1) {
       const bWords = normalizeText(b).split(/\s+/);
-      return normalizeText(`${a} ${bWords.slice(overlap.tailHead).join(' ')}`);
+      return joinTimedCaptionText(a, bWords.slice(overlap.tailHead).join(' '));
     }
 
     if (overlap.headTail >= 3) return a.length >= b.length ? a : b;
@@ -2421,14 +2574,14 @@
     return joinCaptionText(a, b);
   };
 
-  // v0.52 emergency fallback for cases where timed-text cannot be loaded.
-  // "Stable for 900ms" is no longer treated as a sentence boundary. We wait for
-  // meaningful punctuation/length, while rolling DOM replacements are merged
-  // into the same buffer instead of being committed as tiny phrases.
+  // Emergency fallback stays sentence-oriented, with a bounded, rate-aware wait.
   const getStabilizedVisibleCaption = (visibleText) => {
     const rawText = normalizeText(visibleText);
     const text = trimCommittedPrefixFromVisibleText(rawText);
     const now = Date.now();
+    const playbackRate = Math.max(1, Math.min(4, Number(getVideoElement()?.playbackRate || 1)));
+    const maxWaitMs = Math.max(900, VISIBLE_MAX_WAIT_MS / playbackRate);
+    const stableDelayMs = Math.max(450, VISIBLE_STABLE_DELAY_MS / playbackRate);
 
     if (rawText && !text) {
       scheduleVisibleBufferFlush(420);
@@ -2444,7 +2597,7 @@
           endsWithSentencePunctuation(buffered) ||
           buffered.length >= VISIBLE_MAX_CHARS ||
           wordCount >= VISIBLE_MAX_WORDS ||
-          age >= VISIBLE_MAX_WAIT_MS;
+          age >= maxWaitMs || now - state.visibleBufferUpdatedAt >= stableDelayMs;
 
         if (canCommitOnEmpty) {
           const committed = commitVisibleBuffer();
@@ -2503,15 +2656,16 @@
       endsWithSentencePunctuation(buffered) ||
       buffered.length >= VISIBLE_MAX_CHARS ||
       wordCount >= VISIBLE_MAX_WORDS ||
-      age >= VISIBLE_MAX_WAIT_MS;
+      age >= maxWaitMs ||
+      (now - state.visibleBufferUpdatedAt >= stableDelayMs && (wordCount >= 4 || (hasCjk(buffered) && buffered.length >= 8)));
 
     if (shouldCommit) {
       clearTimeout(state.visibleBufferTimer);
       return commitVisibleBuffer();
     }
 
-    const remaining = Math.max(180, VISIBLE_MAX_WAIT_MS - age);
-    scheduleVisibleBufferFlush(Math.min(1200, remaining));
+    const remaining = Math.max(180, maxWaitMs - age);
+    scheduleVisibleBufferFlush(Math.min(stableDelayMs, remaining));
     return null;
   };
 
@@ -2623,6 +2777,7 @@
         retryCount += 1;
       }
     });
+    refreshCurrentTranslation();
     return { successCount, retryCount };
   };
 
@@ -2634,10 +2789,13 @@
   };
 
   const scheduleUpcomingPrefetch = (captionText, { immediate = false } = {}) => {
+    if (state.prefetchTimer && !immediate) return;
     clearTimeout(state.prefetchTimer);
     state.prefetchTimer = setTimeout(async () => {
+      state.prefetchTimer = null;
       try {
         await ensureTranscriptForCurrentVideo(captionText || state.lastCaptionText);
+        if (isCaptionInTargetLanguage()) return;
         const upcomingCues = getUpcomingCueTexts(captionText || state.lastCaptionText);
         if (!upcomingCues.length) {
           log('prefetch skipped: no upcoming transcript cues');
@@ -2648,18 +2806,21 @@
         const texts = upcomingCues.map((cue) => cue.text);
         const requestTranscriptSeq = state.transcriptSeq;
         const requestVideoId = getVideoId();
+        const requestPrefetchGeneration = state.prefetchGeneration;
 
         sendMessage({
           type: 'YTBBI_PREFETCH_TRANSLATIONS',
           texts,
+          contextId: `${requestVideoId}|${requestPrefetchGeneration}`,
           sourceLang: CAPTION_SOURCE_LANG,
+          sourceHint: state.transcriptTrackLang || '',
           targetLang: getCaptionTargetLang()
         }).then((response) => {
-          if (requestTranscriptSeq !== state.transcriptSeq || requestVideoId !== getVideoId()) return;
+          if (requestTranscriptSeq !== state.transcriptSeq || requestVideoId !== getVideoId() || requestPrefetchGeneration !== state.prefetchGeneration) return;
           const settled = settlePrefetchResponse(upcomingCues, response);
           log('prefetch completed', settled.successCount, 'retry', settled.retryCount, response?.mode || '', texts[0]);
         }).catch((error) => {
-          if (requestTranscriptSeq !== state.transcriptSeq || requestVideoId !== getVideoId()) return;
+          if (requestTranscriptSeq !== state.transcriptSeq || requestVideoId !== getVideoId() || requestPrefetchGeneration !== state.prefetchGeneration) return;
           failPrefetchRequest(upcomingCues);
           log('prefetch failed; retry scheduled', error);
         });
@@ -2675,10 +2836,28 @@
     if (!message) return 'Translation failed';
     if (message === 'NO_GOOGLE_CLOUD_API_KEY') return '請在擴充功能設定填入 Google Cloud API Key，或改用免費 Google 模式';
     if (message === 'NO_CLOUD_V3_PROXY_URL') return '請在設定填入 Cloud Translation v3 proxy URL，或改用免費 Google 模式';
-    if (/API key not valid|API_KEY_INVALID/i.test(message)) return 'Google Cloud API Key 無效';
+    if (/NO_GEMINI_API_KEY/.test(message)) return '請在設定填入 Gemini API Key';
+    if (/NO_DEEPL_API_KEY/.test(message)) return '請在設定填入 DeepL API Key';
+    if (/DEEPL_QUOTA_EXCEEDED/.test(message)) return 'DeepL 本月免費額度已用完';
+    if (/NO_AZURE_TRANSLATOR_KEY/.test(message)) return '請在設定填入 Microsoft Translator（Azure）金鑰';
+    if (/BERGAMOT_MODEL_LOADING\] (\S+) (\d+)%/.test(message)) {
+      const [, phase, percent] = message.match(/BERGAMOT_MODEL_LOADING\] (\S+) (\d+)%/);
+      return phase === 'downloading-model' ? `本機翻譯模型下載中… ${percent}%` : '本機翻譯引擎載入中…';
+    }
+    if (/BERGAMOT_SOURCE_LANGUAGE_UNKNOWN/.test(message)) return '本機翻譯需要知道字幕語言：這段字幕沒有可用的字幕軌語言';
+    if (/BERGAMOT_MODEL_NOT_AVAILABLE/.test(message)) return '本機翻譯沒有這個語言方向的模型，請改用其他翻譯來源';
+    if (/BERGAMOT_PERMISSION_REQUIRED/.test(message)) return '請在設定頁按「準備本機模型」，允許下載模型';
+    if (/BERGAMOT_MODEL_DOWNLOAD_FAILED|BERGAMOT_REGISTRY_FAILED/.test(message)) return '本機翻譯模型下載失敗，稍後會再試';
+    if (/BERGAMOT_ENGINE_LOAD_FAILED/.test(message)) return '本機翻譯引擎無法啟動';
+    if (/BERGAMOT_MODEL_INIT_FAILED/.test(message)) return '本機翻譯模型無法載入';
+    if (/BERGAMOT_TRANSLATE_FAILED/.test(message)) return '本機翻譯失敗';
+    if (/NO_GEMINI_PRIMARY_MODEL/.test(message)) return '請在設定選擇 Gemini 主要模型';
+    if (/API key not valid|API_KEY_INVALID|ACCESS_TOKEN_TYPE_UNSUPPORTED|UNAUTHENTICATED/i.test(message)) return '翻譯 API Key 無效或驗證失敗，請確認完整金鑰與服務設定';
     if (/billing|Billing/i.test(message)) return 'Google Cloud 專案可能尚未啟用 Billing';
     if (/Cloud Translation API has not been used|disabled/i.test(message)) return '請在 Google Cloud 啟用 Cloud Translation API，或改用免費 Google 模式';
-    if (/All translation providers failed/i.test(message)) return '所有免費翻譯來源暫時失敗，可能被限流或網路不穩；外掛會在冷卻後自動重試';
+    if (/All translation providers failed/i.test(message)) return state.settings.translationProvider === 'gemini'
+      ? 'Gemini 翻譯失敗，請檢查金鑰、模型、額度或網路狀態'
+      : '翻譯來源暫時失敗，可能被限流或網路不穩';
     if (/Google Free Translate failed/i.test(message)) return '免費 Google 翻譯暫時失敗，正在嘗試備用翻譯來源';
     return message.length > 90 ? `${message.slice(0, 90)}…` : message;
   };
@@ -2700,11 +2879,24 @@
     return normalizeText(cue.text);
   };
 
+  // True when the timed-text track is already in the target language (for
+  // example an English video with English selected as the target).
+  const isCaptionInTargetLanguage = () => !!(state.transcriptCues.length
+    && state.transcriptTrackLang && LANG?.isSameLanguage(state.transcriptTrackLang, getCaptionTargetLang()));
+
   const translateCaption = async (captionText, seq) => {
     const original = normalizeText(captionText);
     if (!original) return;
 
+    if (isCaptionInTargetLanguage()) {
+      clearTimeout(state.translationStatusTimer);
+      state.lastTranslatedText = '';
+      showOverlay({ original, translation: state.settings.showOriginal ? '' : original });
+      return;
+    }
+
     const cacheKey = makeDisplayTranslationKey(original);
+    const requestSettings = state.settings;
     const cached = getDisplayCachedTranslation(original);
     if (cached) {
       clearTimeout(state.translationStatusTimer);
@@ -2725,14 +2917,17 @@
         type: 'YTBBI_TRANSLATE_TEXT',
         text: original,
         sourceLang: CAPTION_SOURCE_LANG,
+        // Caption track language; only used by providers without auto-detect.
+        sourceHint: state.transcriptTrackLang || '',
         targetLang: getCaptionTargetLang()
       }).then((response) => {
         if (!response || !response.ok) throw new Error(response?.error || 'Translation failed');
         const translated = normalizeText(response.translatedText);
-        cacheDisplayTranslation(original, translated);
+        if (!translated) throw new Error('Translation returned empty text');
+        if (requestSettings === state.settings) cacheDisplayTranslation(original, translated);
         return translated;
       }).finally(() => {
-        state.displayTranslationInflight.delete(cacheKey);
+        if (state.displayTranslationInflight.get(cacheKey) === promise) state.displayTranslationInflight.delete(cacheKey);
       });
       state.displayTranslationInflight.set(cacheKey, promise);
     }
@@ -2750,15 +2945,43 @@
 
     try {
       const translated = await promise;
-      if (seq !== state.requestSeq) return;
+      if (seq !== state.requestSeq || state.lastCaptionText !== original || !state.settings.enabled || shouldBlockOverlayBecauseNativeCaptionsOff()) return;
       clearTimeout(state.translationStatusTimer);
+      clearTimeout(state.translationRetryTimer);
+      state.translationRetryAfter = 0;
+      state.translationRetryAttempts = 0;
       state.lastTranslatedText = translated;
       showOverlay({ original, translation: translated });
     } catch (error) {
-      if (seq !== state.requestSeq) return;
+      if (seq !== state.requestSeq || state.lastCaptionText !== original || !state.settings.enabled) return;
       clearTimeout(state.translationStatusTimer);
+      state.translationRetryAttempts += 1;
+      const delayMs = DISPLAY_RETRY_DELAYS_MS[state.translationRetryAttempts - 1];
+      state.translationRetryAfter = delayMs ? Date.now() + delayMs : Infinity;
+      clearTimeout(state.translationRetryTimer);
+      if (delayMs) state.translationRetryTimer = setTimeout(() => refreshCurrentTranslation(), delayMs);
       console.warn(`[${EXT_NAME}] Translation failed.`, error);
       showOverlay({ original, translation: '', status: explainTranslationError(error.message) });
+    }
+  };
+
+  const refreshCurrentTranslation = () => {
+    const original = state.lastCaptionText;
+    if (!original || !state.settings.enabled || shouldBlockOverlayBecauseNativeCaptionsOff()) return;
+    if (state.transcriptCues.length && (state.settings.transcriptFirstMode || (state.transcriptIsAuto && state.settings.stableAutoCaptions))
+      && getStableTranscriptCaption() !== original) return;
+    const cached = getDisplayCachedTranslation(original);
+    if (cached && cached !== state.lastTranslatedText) {
+      clearTimeout(state.translationStatusTimer);
+      clearTimeout(state.translationRetryTimer);
+      state.lastTranslatedText = cached;
+      state.translationRetryAfter = 0;
+      state.translationRetryAttempts = 0;
+      showOverlay({ original, translation: cached });
+    } else if (!cached && !state.displayTranslationInflight.has(makeDisplayTranslationKey(original))
+      && state.translationRetryAfter > 0 && Date.now() >= state.translationRetryAfter) {
+      state.translationRetryAfter = 0;
+      translateCaption(original, ++state.requestSeq);
     }
   };
 
@@ -2786,6 +3009,7 @@
       // When a video is paused, YouTube may still mutate caption DOM or our
       // transcript watcher may fire. Do not advance to future transcript cues
       // unless the user actually seeks to a different timestamp.
+      refreshCurrentTranslation();
       return;
     }
 
@@ -2829,6 +3053,11 @@
     }
 
     if (!captionText) {
+      if (state.lastCaptionText) state.requestSeq += 1;
+      clearTimeout(state.translationStatusTimer);
+      clearTimeout(state.translationRetryTimer);
+      state.translationRetryAfter = 0;
+      state.translationRetryAttempts = 0;
       state.lastCaptionText = '';
       state.lastTranslatedText = '';
       state.currentStableCaptionKey = '';
@@ -2846,7 +3075,13 @@
       : `visible-stable|${captionText}`;
 
     const normalizedCaptionText = normalizeText(captionText);
-    if (captionKey === state.currentStableCaptionKey && normalizedCaptionText === state.lastCaptionText) return;
+    if (captionKey === state.currentStableCaptionKey && normalizedCaptionText === state.lastCaptionText) {
+      refreshCurrentTranslation();
+      return;
+    }
+    clearTimeout(state.translationRetryTimer);
+    state.translationRetryAfter = 0;
+    state.translationRetryAttempts = 0;
 
     const previousText = state.lastCaptionText;
     const cachedTranslation = getDisplayCachedTranslation(normalizedCaptionText);
@@ -3027,12 +3262,16 @@
   };
 
   const scheduleCaptionRead = () => {
-    clearTimeout(state.textTimer);
     if (!isSupportedVideoPage()) {
       deactivateForUnsupportedPage();
       return;
     }
-    state.textTimer = setTimeout(handleCaptionChange, 80);
+    // Continuous timeupdate / rolling-CC events must not postpone reads forever.
+    if (state.textTimer) return;
+    state.textTimer = setTimeout(() => {
+      state.textTimer = null;
+      handleCaptionChange();
+    }, 80);
   };
 
   const isCaptionMutation = (mutation) => {
@@ -3217,6 +3456,12 @@
       }
       const isTimelineJump = event.type === 'seeking' || event.type === 'seeked';
       if (isTimelineJump) {
+        state.requestSeq += 1;
+        clearTimeout(state.translationStatusTimer);
+        clearTimeout(state.translationRetryTimer);
+        state.translationRetryAfter = 0;
+        state.translationRetryAttempts = 0;
+        invalidateUpcomingPrefetch();
         state.currentStableCaptionKey = '';
         state.lastCaptionText = '';
         state.lastTranslatedText = '';
@@ -3259,8 +3504,36 @@
     }, 260);
   };
 
+  // Settings that only change how the overlay looks. Changing them (including
+  // the in-player on/off button) must not refetch captions or drop translations.
+  const DISPLAY_ONLY_SETTING_KEYS = new Set([
+    'enabled', 'hideNativeCaptions', 'showOriginal', 'showTranslation', 'fontSize', 'bottomPercent',
+    'maxWidthPercent', 'showWordUnderline', 'uiLanguage', 'recalculateOnScroll', 'recalculateOnViewportResize'
+  ]);
+
+  const applyDisplayOnlySettingsChange = async () => {
+    state.settings = await storageGet();
+    applySettingsToDom();
+    updatePlayerToggleState();
+    if (!isSupportedVideoPage()) return;
+    if (!state.settings.enabled) {
+      hideOverlay(true);
+      return;
+    }
+    // Force one re-render with the new flags; cached translations are kept.
+    state.lastOverlaySignature = '';
+    state.lastRenderedOriginal = '';
+    state.lastRenderedTranslation = '';
+    state.currentStableCaptionKey = '';
+    scheduleCaptionRead();
+  };
+
   const onSettingsChanged = async () => {
     state.settings = await storageGet();
+    state.displayTranslationCache.clear();
+    state.displayTranslationInflight.clear();
+    state.requestSeq += 1;
+    clearTimeout(state.translationRetryTimer);
     if (!isSupportedVideoPage()) {
       applySettingsToDom();
       deactivateForUnsupportedPage();
@@ -3292,9 +3565,10 @@
     try {
       EXT.storage.onChanged.addListener((changes, area) => {
         if (area !== 'local') return;
-        const changedKeys = Object.keys(changes || {});
-        if (!changedKeys.some((key) => key in DEFAULT_SETTINGS)) return;
-        onSettingsChanged();
+        const changedKeys = Object.keys(changes || {}).filter((key) => key in DEFAULT_SETTINGS);
+        if (!changedKeys.length) return;
+        if (changedKeys.every((key) => DISPLAY_ONLY_SETTING_KEYS.has(key))) applyDisplayOnlySettingsChange();
+        else onSettingsChanged();
       });
     } catch (error) {
       log('storage.onChanged is unavailable:', error);

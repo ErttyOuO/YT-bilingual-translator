@@ -444,34 +444,12 @@ html.tbt-twitch-shorts-mode-disabled .tbt-twitch-popover {
   transition: color 160ms ease, opacity 160ms ease, transform 160ms ease, background-color 160ms ease;
 }
 
-.tbt-twitch-player-toggle-svg {
-  width: 25px;
-  height: 25px;
+.tbt-twitch-player-toggle-image {
+  width: 28px;
+  height: 28px;
   display: block;
-  overflow: visible;
-}
-
-.tbt-twitch-player-toggle-box,
-.tbt-twitch-player-toggle-badge,
-.tbt-twitch-player-toggle-line,
-.tbt-twitch-player-toggle-mark {
-  vector-effect: non-scaling-stroke;
-}
-
-.tbt-twitch-player-toggle-box,
-.tbt-twitch-player-toggle-badge {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.9;
-}
-
-.tbt-twitch-player-toggle-line,
-.tbt-twitch-player-toggle-mark {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.9;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  object-fit: contain;
+  pointer-events: none;
 }
 
 .tbt-twitch-player-toggle:hover .tbt-twitch-player-toggle-icon,
@@ -500,9 +478,8 @@ html.tbt-twitch-shorts-mode-disabled .tbt-twitch-popover {
   opacity: .76;
 }
 
-.tbt-twitch-player-toggle-off .tbt-twitch-player-toggle-badge,
-.tbt-twitch-player-toggle-off .tbt-twitch-player-toggle-mark {
-  opacity: .55;
+.tbt-twitch-player-toggle-off .tbt-twitch-player-toggle-image {
+  filter: grayscale(1);
 }
 
 @media (prefers-reduced-motion: reduce) {

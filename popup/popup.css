@@ -140,7 +140,10 @@ body[data-provider="gemini"] .provider-gemini,
 body[data-provider="cloud-v2"] .provider-cloud-v2,
 body[data-provider="cloud-v3-proxy"] .provider-cloud-v3-proxy,
 body[data-provider="libretranslate"] .provider-libretranslate,
-body[data-provider="lingva"] .provider-lingva { display: grid; gap: 10px; }
+body[data-provider="lingva"] .provider-lingva,
+body[data-provider="deepl"] .provider-deepl,
+body[data-provider="microsoft-azure"] .provider-microsoft-azure,
+body[data-provider="bergamot"] .provider-bergamot { display: grid; gap: 10px; }
 
 .secret-input-row {
   display: grid;

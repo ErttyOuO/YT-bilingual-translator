@@ -20,6 +20,10 @@
     debug: false,
     translationProvider: 'auto-free',
     googleCloudApiKey: '',
+    deeplApiKey: '',
+    azureTranslatorKey: '',
+    azureTranslatorRegion: '',
+    bergamotCloudFallback: false,
     geminiApiKey: '',
     geminiPrimaryModel: '',
     geminiFallbackModel: '',
@@ -33,6 +37,7 @@
     showWordUnderline: true,
     learningMode: 'en-to-zh',
     stableAutoCaptions: true,
+    mergeManualCaptions: true,
     autoFailover: true,
     batchTranslationEnabled: true,
     batchSize: 8,
@@ -109,6 +114,10 @@
     'batchTranslationEnabled',
     'batchSize',
     'googleCloudApiKey',
+    'deeplApiKey',
+    'azureTranslatorKey',
+    'azureTranslatorRegion',
+    'bergamotCloudFallback',
     'geminiApiKey',
     'geminiPrimaryModel',
     'geminiFallbackModel',
@@ -126,6 +135,7 @@
     'requireNativeCaptions',
     'autoEnableNativeCaptions',
     'stableAutoCaptions',
+    'mergeManualCaptions',
     'transcriptFirstMode',
     'interactiveLookup',
     'dictionaryMode',
@@ -172,6 +182,11 @@
     if (message === 'NO_GEMINI_API_KEY') return t('errNoGeminiKey');
     if (message === 'NO_GEMINI_PRIMARY_MODEL') return t('errNoGeminiModel');
     if (message === 'NO_CLOUD_V3_PROXY_URL') return t('errNoCloudV3');
+    if (/NO_DEEPL_API_KEY/.test(message)) return t('errNoDeeplKey');
+    if (/DEEPL_QUOTA_EXCEEDED/.test(message)) return t('errDeeplQuota');
+    if (/NO_AZURE_TRANSLATOR_KEY/.test(message)) return t('errNoAzureKey');
+    const bergamotCode = String(message).match(/BERGAMOT_[A-Z_]+/);
+    if (bergamotCode) return t(`err_${bergamotCode[0]}`);
     if (/API key not valid|API_KEY_INVALID|invalid api key/i.test(message)) return t($('translationProvider')?.value === 'gemini' ? 'errInvalidGeminiKey' : 'errInvalidKey');
     if (/billing|Billing/i.test(message)) return t('errBilling');
     if (/disabled|has not been used/i.test(message)) return t('errApiDisabled');
@@ -192,8 +207,9 @@
     const help = $('providerHelp');
     const providerHelpKey = {
       'auto-free': 'providerHelpAutoFree',
-      'google-html': 'providerHelpGoogleHtml',
-      'microsoft-edge': 'providerHelpMicrosoft',
+      'deepl': 'providerHelpDeepL',
+      'microsoft-azure': 'providerHelpAzure',
+      'bergamot': 'providerHelpBergamot',
       'google-free': 'providerHelpGoogleFree',
       'gemini': 'providerHelpGemini',
       'cloud-v2': 'providerHelpCloudV2',
@@ -203,6 +219,100 @@
     }[provider];
     const text = providerHelpKey ? t(providerHelpKey) : '';
     if (help) help.textContent = text;
+    if (provider === 'bergamot') startBergamotStatusPolling();
+  };
+
+  // Hosts each provider needs. They are optional permissions, requested only
+  // when the user picks that provider, so other users never see a prompt.
+  const PROVIDER_ORIGINS = {
+    'deepl': ['https://api-free.deepl.com/*', 'https://api.deepl.com/*'],
+    'microsoft-azure': ['https://api.cognitive.microsofttranslator.com/*'],
+    'bergamot': ['https://firefox.settings.services.mozilla.com/*', 'https://firefox-settings-attachments.cdn.mozilla.net/*']
+  };
+
+  // Must run synchronously inside the click handler: Firefox only shows the
+  // permission prompt for calls made directly from a user action.
+  const requestProviderPermission = (provider) => {
+    const origins = PROVIDER_ORIGINS[provider];
+    if (!origins || !EXT.permissions?.request) return Promise.resolve(true);
+    return Promise.resolve(EXT.permissions.request({ origins })).catch(() => false);
+  };
+
+  const BERGAMOT_STATE_KEYS = {
+    'idle': 'bergamotStateIdle',
+    'downloading-model': 'bergamotStateDownloading',
+    'loading-engine': 'bergamotStateLoadingEngine',
+    'loading-model': 'bergamotStateLoadingModel',
+    'ready': 'bergamotStateReady',
+    'error': 'bergamotStateError'
+  };
+
+  const renderBergamotStatus = (info) => {
+    const node = $('bergamotStatus');
+    if (!node || !info) return;
+    const lines = [];
+    const percent = info.total ? Math.floor((info.received / info.total) * 100) : 0;
+    lines.push(t(BERGAMOT_STATE_KEYS[info.state] || 'bergamotStateIdle', {
+      pair: String(info.pair || '').replace('|', ' → '),
+      percent,
+      mb: (info.total / 1e6).toFixed(1)
+    }));
+    if (info.state === 'error' && info.error) lines.push(explainError(info.error.code || info.error.message));
+    if (!info.permission) lines.push(t('bergamotNeedsPermission'));
+    node.textContent = lines.join('\n');
+    node.dataset.state = info.state === 'error' ? 'error' : (info.state === 'ready' ? '' : 'warn');
+  };
+
+  let bergamotPollTimer = 0;
+  const refreshBergamotStatus = async () => {
+    try {
+      const response = await sendMessage({ type: 'YTBBI_BERGAMOT_STATUS' });
+      if (response?.ok) renderBergamotStatus(response.status);
+      return response?.status;
+    } catch (_error) {
+      return null;
+    }
+  };
+  const startBergamotStatusPolling = () => {
+    if (bergamotPollTimer) return;
+    refreshBergamotStatus();
+    bergamotPollTimer = setInterval(() => {
+      if ($('translationProvider')?.value !== 'bergamot') {
+        clearInterval(bergamotPollTimer);
+        bergamotPollTimer = 0;
+        return;
+      }
+      refreshBergamotStatus();
+    }, 1000);
+  };
+
+  const prepareBergamot = () => {
+    const permission = requestProviderPermission('bergamot');
+    (async () => {
+      if (!(await permission)) {
+        setStatus(t('bergamotNeedsPermission'), 6000);
+        return;
+      }
+      await save(true);
+      startBergamotStatusPolling();
+      try {
+        const response = await sendMessage({
+          type: 'YTBBI_BERGAMOT_PREPARE',
+          sourceLang: $('bergamotSourceLang')?.value || 'en',
+          targetLang: $('targetLang')?.value || DEFAULT_SETTINGS.targetLang
+        });
+        if (!response?.ok) throw new Error(response?.error || t('unknownError'));
+        renderBergamotStatus(response.status);
+      } catch (error) {
+        setStatus(explainError(error.message), 8000);
+        refreshBergamotStatus();
+      }
+    })();
+  };
+
+  const clearBergamotModels = async () => {
+    await sendMessage({ type: 'YTBBI_BERGAMOT_CLEAR' }).catch(() => undefined);
+    refreshBergamotStatus();
   };
 
 
@@ -385,6 +495,10 @@
     batchTranslationEnabled: $('batchTranslationEnabled').checked,
     batchSize: Number($('batchSize').value),
     googleCloudApiKey: $('googleCloudApiKey').value.trim(),
+    deeplApiKey: $('deeplApiKey')?.value.trim() || '',
+    azureTranslatorKey: $('azureTranslatorKey')?.value.trim() || '',
+    azureTranslatorRegion: $('azureTranslatorRegion')?.value.trim() || '',
+    bergamotCloudFallback: $('bergamotCloudFallback') ? $('bergamotCloudFallback').checked : false,
     geminiApiKey: $('geminiApiKey')?.value.trim() || '',
     geminiPrimaryModel: $('geminiPrimaryModel')?.value || '',
     geminiFallbackModel: $('geminiFallbackModel')?.value || '',
@@ -402,6 +516,7 @@
     requireNativeCaptions: $('requireNativeCaptions') ? $('requireNativeCaptions').checked : true,
     autoEnableNativeCaptions: $('autoEnableNativeCaptions') ? $('autoEnableNativeCaptions').checked : false,
     stableAutoCaptions: $('stableAutoCaptions').checked,
+    mergeManualCaptions: $('mergeManualCaptions') ? $('mergeManualCaptions').checked : true,
     transcriptFirstMode: $('transcriptFirstMode') ? $('transcriptFirstMode').checked : true,
     interactiveLookup: $('interactiveLookup').checked,
     dictionaryMode: $('dictionaryMode').value,
@@ -419,11 +534,17 @@
     $('enabled').checked = !!settings.enabled;
     if ($('twitchEnabled')) $('twitchEnabled').checked = settings.twitchEnabled !== false;
     if ($('uiLanguage')) $('uiLanguage').value = settings.uiLanguage || 'zh-TW';
-    $('translationProvider').value = settings.translationProvider || 'auto-free';
+    // Providers removed in later versions fall back to the key-free mode.
+    const provider = settings.translationProvider || 'auto-free';
+    $('translationProvider').value = $('translationProvider').querySelector(`option[value="${provider}"]`) ? provider : 'auto-free';
     $('autoFailover').checked = settings.autoFailover !== false;
     $('batchTranslationEnabled').checked = settings.batchTranslationEnabled !== false;
     $('batchSize').value = settings.batchSize || 8;
     $('googleCloudApiKey').value = settings.googleCloudApiKey || '';
+    if ($('deeplApiKey')) $('deeplApiKey').value = settings.deeplApiKey || '';
+    if ($('azureTranslatorKey')) $('azureTranslatorKey').value = settings.azureTranslatorKey || '';
+    if ($('azureTranslatorRegion')) $('azureTranslatorRegion').value = settings.azureTranslatorRegion || '';
+    if ($('bergamotCloudFallback')) $('bergamotCloudFallback').checked = settings.bergamotCloudFallback === true;
     if ($('geminiApiKey')) $('geminiApiKey').value = settings.geminiApiKey || '';
     if ($('geminiModelFailover')) $('geminiModelFailover').checked = settings.geminiModelFailover !== false;
     if ($('geminiPrimaryModel')) ensureGeminiModelOption($('geminiPrimaryModel'), settings.geminiPrimaryModel || '', false);
@@ -443,6 +564,7 @@
     if ($('requireNativeCaptions')) $('requireNativeCaptions').checked = settings.requireNativeCaptions !== false;
     if ($('autoEnableNativeCaptions')) $('autoEnableNativeCaptions').checked = !!settings.autoEnableNativeCaptions;
     $('stableAutoCaptions').checked = settings.stableAutoCaptions !== false;
+    if ($('mergeManualCaptions')) $('mergeManualCaptions').checked = settings.mergeManualCaptions !== false;
     if ($('transcriptFirstMode')) $('transcriptFirstMode').checked = settings.transcriptFirstMode !== false;
     $('interactiveLookup').checked = !!settings.interactiveLookup;
     $('dictionaryMode').value = settings.dictionaryMode || 'both';
@@ -650,6 +772,16 @@
   };
 
 
+  const clearTranslationCache = async () => {
+    try {
+      const response = await sendMessage({ type: 'YTBBI_CLEAR_TRANSLATION_CACHE' });
+      if (!response?.ok) throw new Error(response?.error || t('unknownError'));
+      setStatus(t('statusCacheCleared'), 4000);
+    } catch (error) {
+      setStatus(t('statusTestFailed', { error: explainError(error.message) }), 8000);
+    }
+  };
+
   const bindExternalLinks = () => {
     document.querySelectorAll('a[data-external-link]').forEach((link) => {
       link.addEventListener('click', async (event) => {
@@ -702,9 +834,18 @@
       }
     });
 
-    $('save').addEventListener('click', () => save());
+    $('save').addEventListener('click', () => {
+      // Ask for the provider's host permission inside the click (user gesture).
+      const permission = requestProviderPermission($('translationProvider').value);
+      permission.then((granted) => save().then(() => {
+        if (!granted) setStatus(t('providerPermissionDenied'), 6000);
+      }));
+    });
+    $('bergamotPrepare')?.addEventListener('click', prepareBergamot);
+    $('bergamotClear')?.addEventListener('click', clearBergamotModels);
     $('reset').addEventListener('click', reset);
     $('testTranslation').addEventListener('click', testTranslation);
+    $('clearTranslationCache')?.addEventListener('click', clearTranslationCache);
     $('loadGeminiModels')?.addEventListener('click', loadGeminiModels);
     $('saveGeminiSettings')?.addEventListener('click', saveGeminiSettings);
     $('testGeminiSettings')?.addEventListener('click', testGeminiSettings);

@@ -97,6 +97,7 @@
       <section class="section card compact-actions">
         <h2 data-i18n="quickActionsSection">快速操作</h2>
         <button id="testTranslation" type="button" class="wide secondary" data-i18n="testProvider">測試目前翻譯來源</button>
+        <button id="clearTranslationCache" type="button" class="wide secondary" data-i18n="clearTranslationCache">清除翻譯快取</button>
       </section>
     </section>
 
@@ -106,9 +107,11 @@
         <label class="field">
           <span data-i18n="translationProvider">翻譯方式</span>
           <select id="translationProvider">
-            <option value="auto-free" data-i18n="providerAutoFree">自動免費模式（Microsoft + Google + 備援）</option>
-            <option value="microsoft-edge" data-i18n="providerMicrosoft">Microsoft Edge Translate（免費批次備援）</option>
+            <option value="auto-free" data-i18n="providerAutoFree">自動免費模式（Google + 備援）</option>
             <option value="google-free" data-i18n="providerGoogleFree">免費 Google 翻譯（免 API Key／免 Cloud Project）</option>
+            <option value="deepl" data-i18n="providerDeepL">DeepL API（自備 Key，品質優先）</option>
+            <option value="microsoft-azure" data-i18n="providerAzure">Microsoft Translator（Azure，自備 Key）</option>
+            <option value="bergamot" data-i18n="providerBergamot">本機翻譯 Bergamot（不送出字幕）</option>
             <option value="gemini" data-i18n="providerGemini">Gemini API（自選主要／備援模型）</option>
             <option value="cloud-v2" data-i18n="providerCloudV2">官方 Google Cloud Translation Basic v2（API Key）</option>
             <option value="cloud-v3-proxy" data-i18n="providerCloudV3">官方 Google Cloud Translation v3 translateText（Proxy）</option>
@@ -161,6 +164,39 @@
         <div id="geminiStatus" class="gemini-status" role="status" aria-live="polite"></div>
       </section>
 
+      <section class="section card provider-field provider-deepl">
+        <h2 data-i18n="deeplSection">DeepL API</h2>
+        <label class="field"><span data-i18n="deeplApiKey">DeepL API Key</span><input id="deeplApiKey" type="password" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:fx" autocomplete="off" spellcheck="false" /><small data-i18n="deeplApiKeyHelp">免費方案金鑰結尾為「:fx」，每月 50 萬字元。金鑰只存在本機。</small></label>
+      </section>
+      <section class="section card provider-field provider-microsoft-azure">
+        <h2 data-i18n="azureSection">Microsoft Translator（Azure）</h2>
+        <label class="field"><span data-i18n="azureKey">金鑰（Key）</span><input id="azureTranslatorKey" type="password" autocomplete="off" spellcheck="false" /></label>
+        <label class="field"><span data-i18n="azureRegion">區域（Region）</span><input id="azureTranslatorRegion" type="text" placeholder="eastasia / global" autocomplete="off" spellcheck="false" /><small data-i18n="azureHelp">在 Azure 建立 Translator 資源後，於「金鑰與端點」複製金鑰與區域。F0 免費層每月 200 萬字元。</small></label>
+      </section>
+      <section class="section card provider-field provider-bergamot">
+        <h2 data-i18n="bergamotSection">本機翻譯（Bergamot）</h2>
+        <p class="reference-note" data-i18n="bergamotIntro">在瀏覽器內用 Firefox Translations 的模型翻譯，字幕不會送到任何伺服器。每個語言方向第一次使用需下載約 50 MB 模型，翻譯時約占用 300–600 MB 記憶體。</p>
+        <label class="field">
+          <span data-i18n="bergamotSourceLang">要準備的字幕語言</span>
+          <select id="bergamotSourceLang">
+            <option value="en">English</option>
+            <option value="ja">日本語</option>
+            <option value="ko">한국어</option>
+            <option value="es">Español</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+            <option value="zh-Hans">简体中文</option>
+          </select>
+          <small data-i18n="bergamotSourceHelp">實際翻譯時會使用 YouTube 字幕軌標示的語言；這裡只決定先下載哪個方向的模型。</small>
+        </label>
+        <div class="button-row">
+          <button id="bergamotPrepare" type="button" data-i18n="bergamotPrepare">準備本機模型</button>
+          <button id="bergamotClear" type="button" class="secondary" data-i18n="bergamotClear">刪除已下載的模型</button>
+        </div>
+        <div id="bergamotStatus" class="gemini-status" role="status" aria-live="polite"></div>
+        <label class="check"><input id="bergamotCloudFallback" type="checkbox" /> <span data-i18n="bergamotCloudFallback">本機翻譯失敗時改用免費雲端翻譯（會送出字幕文字）</span></label>
+      </section>
+
       <section class="section card provider-field provider-cloud-v2">
         <h2 data-i18n="cloudSection">Google Cloud</h2>
         <label class="field"><span data-i18n="cloudApiKey">Google Cloud API Key</span><input id="googleCloudApiKey" type="password" placeholder="Google Cloud API Key" data-i18n-placeholder="cloudApiKeyPlaceholder" autocomplete="off" /><small data-i18n="cloudApiKeyHelp">只在官方 Cloud Basic v2 模式使用。免費 Google 模式不需要填。</small></label>
@@ -205,6 +241,7 @@
         <label class="check full"><input id="requireNativeCaptions" type="checkbox" /> <span data-i18n="requireNativeCaptions">只在 YouTube CC 字幕啟用時顯示外掛字幕</span></label>
         <label class="check full"><input id="autoEnableNativeCaptions" type="checkbox" /> <span data-i18n="autoEnableNativeCaptions">開啟外掛字幕時自動啟用 YouTube CC</span></label>
         <label class="check"><input id="stableAutoCaptions" type="checkbox" /> <span data-i18n="stableAutoCaptions">自動字幕穩定分段</span></label>
+        <label class="check full"><input id="mergeManualCaptions" type="checkbox" /> <span data-i18n="mergeManualCaptions">手動字幕合併成完整句子再翻譯</span></label>
         <label class="check full"><input id="transcriptFirstMode" type="checkbox" /> <span data-i18n="transcriptFirstMode">優先使用完整字幕資料，不依賴畫面字幕跳字</span></label>
       </section>
       <section class="section card">

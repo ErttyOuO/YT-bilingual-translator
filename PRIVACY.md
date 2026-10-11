@@ -9,7 +9,7 @@ YT 雙語字幕翻譯器是一個在瀏覽器本機執行的擴充功能，支�
 - 擴充功能設定
 - 每支影片的字幕位置
 - 你加入的單字本資料
-- 使用期間的翻譯快取或顯示快取
+- 翻譯快取：已翻譯的字幕句子與譯文（最多約 2,500 句），只存在本機 extension storage，用來避免重複翻譯；可在 Popup「清除翻譯快取」一鍵刪除
 
 ## 可能送出的外部請求
 
@@ -18,7 +18,8 @@ YT 雙語字幕翻譯器是一個在瀏覽器本機執行的擴充功能，支�
 可能使用的服務包含：
 
 - Google Translate free endpoints
-- Microsoft Edge Translate endpoints
+- DeepL API，如果你自行設定 DeepL API Key
+- Microsoft Translator（Azure），如果你自行設定金鑰
 - Google Cloud Translation，如果你自行設定
 - Google Gemini API，如果你自行設定 Gemini API Key 與模型
 - LibreTranslate，如果你自行設定
@@ -26,6 +27,18 @@ YT 雙語字幕翻譯器是一個在瀏覽器本機執行的擴充功能，支�
 - MyMemory
 - Free Dictionary API
 - Wikipedia / Wikimedia Commons / Wikimedia image endpoints
+
+## 本機翻譯（Bergamot）
+
+選擇「本機翻譯 Bergamot」時，字幕文字只在你的瀏覽器內翻譯，不會送到任何伺服器。
+
+擴充功能會向 Mozilla 下載翻譯模型（`firefox.settings.services.mozilla.com` 與 `firefox-settings-attachments.cdn.mozilla.net`）。下載請求不包含字幕內容，只有模型檔案名稱。模型存在擴充功能的 IndexedDB，可在設定頁刪除。
+
+只有在你勾選「本機翻譯失敗時改用免費雲端翻譯」時，失敗的字幕才會改送到免費翻譯服務。
+
+## 選用權限
+
+DeepL、Microsoft Translator（Azure）與本機模型下載所需的網站權限是選用權限，只有在你選擇該翻譯來源時才會詢問，可隨時在 Firefox 附加元件管理頁撤銷。
 
 ## API Key
 

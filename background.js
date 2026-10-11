@@ -23,6 +23,10 @@
     translationProvider: 'auto-free',
     autoFailover: true,
     googleCloudApiKey: '',
+    deeplApiKey: '',
+    azureTranslatorKey: '',
+    azureTranslatorRegion: '',
+    bergamotCloudFallback: false,
     geminiApiKey: '',
     geminiPrimaryModel: '',
     geminiFallbackModel: '',
@@ -36,6 +40,7 @@
     showWordUnderline: true,
     learningMode: 'en-to-zh',
     stableAutoCaptions: true,
+    mergeManualCaptions: true,
     batchTranslationEnabled: true,
     batchSize: 8,
     transcriptFirstMode: true,
@@ -45,29 +50,50 @@
     onboardingDone: false
   });
 
-  const PROVIDERS = Object.freeze({    'microsoft-edge': { label: 'Microsoft Edge Translate', delayMs: 260, timeoutMs: 9000, cooldownBaseMs: 14000 },
-    'google-free': { label: 'Google Free', delayMs: 680, timeoutMs: 8500, cooldownBaseMs: 20000 },
-    'google-dict': { label: 'Google Dictionary Endpoint', delayMs: 780, timeoutMs: 8500, cooldownBaseMs: 24000 },
-    'lingva': { label: 'Lingva', delayMs: 760, timeoutMs: 10500, cooldownBaseMs: 22000 },
-    'libretranslate': { label: 'LibreTranslate', delayMs: 980, timeoutMs: 12000, cooldownBaseMs: 26000 },
-    'mymemory': { label: 'MyMemory', delayMs: 950, timeoutMs: 12000, cooldownBaseMs: 22000 },
-    'gemini': { label: 'Gemini API', delayMs: 80, timeoutMs: 15000, cooldownBaseMs: 9000 },
-    'cloud-v2': { label: 'Google Cloud v2', delayMs: 120, timeoutMs: 10000, cooldownBaseMs: 12000 },
-    'cloud-v3-proxy': { label: 'Google Cloud v3 Proxy', delayMs: 120, timeoutMs: 10000, cooldownBaseMs: 12000 }
+  const PROVIDERS = Object.freeze({
+    'google-free': { label: 'Google Free', delayMs: 680, timeoutMs: 8500, cooldownBaseMs: 20000, concurrency: 2 },
+    'google-dict': { label: 'Google Dictionary Endpoint', delayMs: 780, timeoutMs: 8500, cooldownBaseMs: 24000, concurrency: 2 },
+    'lingva': { label: 'Lingva', delayMs: 760, timeoutMs: 10500, cooldownBaseMs: 22000, concurrency: 1 },
+    'libretranslate': { label: 'LibreTranslate', delayMs: 980, timeoutMs: 12000, cooldownBaseMs: 26000, concurrency: 1 },
+    'mymemory': { label: 'MyMemory', delayMs: 950, timeoutMs: 12000, cooldownBaseMs: 22000, concurrency: 1 },
+    'gemini': { label: 'Gemini API', delayMs: 80, timeoutMs: 15000, cooldownBaseMs: 9000, concurrency: 4 },
+    'cloud-v2': { label: 'Google Cloud v2', delayMs: 120, timeoutMs: 10000, cooldownBaseMs: 12000, concurrency: 4 },
+    'cloud-v3-proxy': { label: 'Google Cloud v3 Proxy', delayMs: 120, timeoutMs: 10000, cooldownBaseMs: 12000, concurrency: 4 },
+    'deepl': { label: 'DeepL API', delayMs: 150, timeoutMs: 10000, cooldownBaseMs: 12000, concurrency: 3 },
+    'microsoft-azure': { label: 'Microsoft Translator (Azure)', delayMs: 120, timeoutMs: 10000, cooldownBaseMs: 12000, concurrency: 3 },
+    // Local WASM engine: one worker, so one request at a time; the gate only
+    // orders requests (visible subtitle first), it does not rate-limit.
+    'bergamot': { label: 'Bergamot (local)', delayMs: 0, timeoutMs: 0, cooldownBaseMs: 5000, concurrency: 1 }
   });
 
-  const AUTO_FREE_ORDER = ['microsoft-edge', 'google-free', 'google-dict', 'lingva', 'libretranslate', 'mymemory'];
-  const GOOGLE_FALLBACK_ORDER = ['microsoft-edge', 'google-free', 'google-dict', 'lingva', 'libretranslate', 'mymemory'];
-  const MICROSOFT_AUTH_URL = 'https://edge.microsoft.com/translate/auth';
-  const MICROSOFT_TRANSLATE_URL = 'https://api-edge.cognitive.microsofttranslator.com/translate';  const MAX_CACHE_SIZE = 1800;
+  // Key-free mode only uses endpoints that answered in October 2026 testing.
+  // Microsoft's free Edge endpoint (edge.microsoft.com/translate/auth) returned
+  // 404 and was removed; Microsoft is now only available with an Azure key.
+  const AUTO_FREE_ORDER = ['google-free', 'google-dict', 'mymemory'];
+  const GOOGLE_FALLBACK_ORDER = AUTO_FREE_ORDER;
+  const ENDPOINT_GONE_COOLDOWN_MS = 30 * 60 * 1000;
+  const AZURE_TRANSLATE_URL = 'https://api.cognitive.microsofttranslator.com/translate';
+  const DEEPL_FREE_URL = 'https://api-free.deepl.com/v2/translate';
+  const DEEPL_PRO_URL = 'https://api.deepl.com/v2/translate';
+  const MAX_CACHE_SIZE = 3000;
+  const PERSISTED_CACHE_KEY = 'ytbbiTranslationCacheV1';
+  const PERSISTED_CACHE_LIMIT = 2500;
+  const PERSIST_DEBOUNCE_MS = 4000;
+  const MARKER_COOLDOWN_MS = 10 * 60 * 1000;
+  const LANG = globalThis.YTBBI_LANG;
   const DEFAULT_BATCH_SIZE = 8;
   const MAX_BATCH_SIZE = 16;
   const DELIMITER_SAFE_BATCH_SIZE = 8;
   const MAX_PREFETCH_TEXTS_PER_REQUEST = 100;
-  const BATCH_SEPARATOR = '\n§§§ YTBBI_BATCH_SPLIT §§§\n';
 
   const translateCache = new Map();
   const inflightTranslate = new Map();
+  const translationJobs = [];
+  const translationJobByKey = new Map();
+  let activeTranslationJobs = 0;
+  let activePrefetchJobs = 0;
+  let translationSettingsSignature = '';
+  let translationCacheScope = 0;
   const dictionaryCache = new Map();
   const wordImageCache = new Map();
   const providerState = new Map();
@@ -75,8 +101,6 @@
   const prefetchBatchInflight = new Map();
   const prefetchBatchQueue = [];
   let prefetchBatchTimer = 0;
-  let microsoftToken = '';
-  let microsoftTokenExpiresAt = 0;
 
   const log = (...args) => console.log(`[${EXT_NAME}]`, ...args);
 
@@ -130,10 +154,77 @@
   const storageGet = (defaults) => callMaybePromise(EXT.storage.local.get, EXT.storage.local, defaults);
   const storageSet = (value) => callMaybePromise(EXT.storage.local.set, EXT.storage.local, value);
 
+  // Short stable hash so persisted cache keys survive background restarts but
+  // change whenever the provider/model/endpoint configuration changes.
+  const hashString = (value) => {
+    let hash = 5381;
+    const text = String(value || '');
+    for (let index = 0; index < text.length; index += 1) hash = ((hash * 33) ^ text.charCodeAt(index)) >>> 0;
+    return hash.toString(36);
+  };
+
+  // The event page can be unloaded when idle; keep finished translations in
+  // storage.local so a paused video does not re-translate everything on resume.
+  let persistTimer = 0;
+  const cacheReady = (async () => {
+    try {
+      const stored = await storageGet({ [PERSISTED_CACHE_KEY]: null });
+      const entries = stored?.[PERSISTED_CACHE_KEY]?.entries;
+      if (Array.isArray(entries)) {
+        for (const entry of entries) {
+          if (Array.isArray(entry) && typeof entry[0] === 'string' && typeof entry[1] === 'string' && !translateCache.has(entry[0])) {
+            translateCache.set(entry[0], entry[1]);
+          }
+        }
+      }
+    } catch (_error) {
+      // A missing or corrupt persisted cache only costs extra requests.
+    }
+  })();
+
+  const schedulePersistTranslationCache = () => {
+    if (persistTimer) return;
+    persistTimer = setTimeout(() => {
+      persistTimer = 0;
+      const entries = Array.from(translateCache.entries()).slice(-PERSISTED_CACHE_LIMIT);
+      storageSet({ [PERSISTED_CACHE_KEY]: { version: 1, savedAt: now(), entries } }).catch(() => undefined);
+    }, PERSIST_DEBOUNCE_MS);
+  };
+
+  const clearPersistedTranslationCache = async () => {
+    translateCache.clear();
+    clearTimeout(persistTimer);
+    persistTimer = 0;
+    await storageSet({ [PERSISTED_CACHE_KEY]: { version: 1, savedAt: now(), entries: [] } });
+    return { ok: true };
+  };
+
   const getSettings = async () => {
+    await cacheReady;
     const stored = await storageGet(DEFAULT_SETTINGS);
     const merged = { ...DEFAULT_SETTINGS, ...stored, sourceLang: 'auto' };
-    if (merged.translationProvider === 'google-html') merged.translationProvider = 'auto-free';
+    // Removed providers fall back to the key-free mode.
+    if (merged.translationProvider === 'google-html' || merged.translationProvider === 'microsoft-edge') merged.translationProvider = 'auto-free';
+    const signature = JSON.stringify([
+      merged.translationProvider, merged.autoFailover, merged.geminiApiKey,
+      merged.geminiPrimaryModel, merged.geminiFallbackModel, merged.geminiModelFailover,
+      merged.googleCloudApiKey, merged.cloudV3ProxyUrl, merged.libreTranslateUrl,
+      merged.libreTranslateApiKey, merged.lingvaInstanceUrl, merged.deeplApiKey, merged.azureTranslatorKey,
+      merged.azureTranslatorRegion, merged.bergamotCloudFallback
+    ]);
+    if (signature !== translationSettingsSignature) {
+      translationSettingsSignature = signature;
+      // Cache keys embed this scope, so entries from another provider/model are
+      // never returned; switching back to an earlier configuration reuses them.
+      // API keys are deliberately excluded: a new key does not change output.
+      translationCacheScope = hashString(JSON.stringify([
+        merged.translationProvider, merged.autoFailover, merged.geminiPrimaryModel, merged.geminiFallbackModel,
+        merged.geminiModelFailover, merged.cloudV3ProxyUrl, merged.libreTranslateUrl, merged.lingvaInstanceUrl,
+        merged.bergamotCloudFallback
+      ]));
+      providerState.forEach((state) => { state.cooldownUntil = 0; state.failures = 0; });
+    }
+    merged.translationCacheScope = translationCacheScope;
     return merged;
   };
 
@@ -164,15 +255,26 @@
     state.lastOkAt = now();
   };
 
+  const TRANSIENT_MESSAGE = /timeout|timed out|network ?error|failed to fetch|rate.?limit|quota|too many requests|temporarily|try again later/i;
+
   const isRateLimitOrTransient = (error) => {
+    if (error?.batchFormat) return false;
     const status = Number(error?.status || 0);
     const message = String(error?.message || '');
-    return status === 0 || status === 403 || status === 408 || status === 429 || status >= 500 || /timeout|timed out|network|failed to fetch|rate|quota|too many|temporarily|limit/i.test(message);
+    return status === 0 || status === 403 || status === 408 || status === 429 || status >= 500 || TRANSIENT_MESSAGE.test(message);
+  };
+
+  // A single retry is only worth it for throttling or server hiccups; 403 from
+  // a free endpoint usually means "blocked for a while", so move on instead.
+  const isRetryable = (error) => {
+    if (error?.batchFormat) return false;
+    const status = Number(error?.status || 0);
+    return status === 0 || status === 408 || status === 429 || status >= 500;
   };
 
   const getProviderConfig = (provider) => {
     if (String(provider || '').startsWith('gemini:')) {
-      return { label: provider, delayMs: 80, timeoutMs: 15000, cooldownBaseMs: 9000 };
+      return { label: provider, delayMs: 80, timeoutMs: 15000, cooldownBaseMs: 9000, concurrency: 4 };
     }
     return PROVIDERS[provider] || PROVIDERS['google-free'];
   };
@@ -180,6 +282,12 @@
   const markProviderFailure = (provider, error) => {
     const state = getProviderState(provider);
     state.failures += 1;
+    // 404 from a free endpoint means it moved or was shut down; stop paying
+    // its latency on every subtitle for a while.
+    if (Number(error?.status) === 404 && PROVIDERS[provider]) {
+      state.cooldownUntil = now() + ENDPOINT_GONE_COOLDOWN_MS;
+      return;
+    }
     if (!isRateLimitOrTransient(error)) return;
     const config = getProviderConfig(provider);
     const base = config.cooldownBaseMs || 20000;
@@ -187,33 +295,74 @@
     state.cooldownUntil = now() + cooldown;
   };
 
-  const runQueued = (provider, task) => {
-    const previous = providerQueues.get(provider) || Promise.resolve();
-    const next = previous.catch(() => undefined).then(async () => {
-      const config = getProviderConfig(provider);
-      const state = getProviderState(provider);
-      const waitMs = Math.max(0, state.nextAllowedAt - now());
-      if (waitMs) await sleep(waitMs);
-      state.nextAllowedAt = now() + (config.delayMs || 700);
-      return task();
-    });
-    providerQueues.set(provider, next.catch(() => undefined));
-    return next;
+  // Provider gate: a small priority queue per provider. Requests start at most
+  // every `delayMs`, up to `concurrency` at once, and the subtitle currently on
+  // screen (priority > 0) always jumps ahead of waiting prefetch requests.
+  const getProviderGate = (provider) => {
+    if (!providerQueues.has(provider)) providerQueues.set(provider, { active: 0, waiters: [], seq: 0, timer: 0 });
+    return providerQueues.get(provider);
   };
 
-  const fetchWithTimeout = async (provider, url, options = {}) => {
+  const pumpProviderGate = (provider) => {
+    const gate = getProviderGate(provider);
+    if (gate.timer) return;
     const config = getProviderConfig(provider);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), config.timeoutMs || 10000);
-    try {
-      return await runQueued(provider, () => fetch(url, { ...options, signal: controller.signal }));
-    } catch (error) {
-      if (error?.name === 'AbortError') {
-        throw new ProviderError(provider, `${provider} timeout`, 0);
+    const state = getProviderState(provider);
+    const concurrency = config.concurrency || 2;
+    while (gate.active < concurrency && gate.waiters.length) {
+      const waitMs = state.nextAllowedAt - now();
+      if (waitMs > 0) {
+        gate.timer = setTimeout(() => { gate.timer = 0; pumpProviderGate(provider); }, waitMs);
+        return;
       }
-      throw new ProviderError(provider, error?.message || String(error), 0);
+      gate.waiters.sort((a, b) => (b.priority - a.priority) || (a.seq - b.seq));
+      const waiter = gate.waiters.shift();
+      gate.active += 1;
+      state.nextAllowedAt = now() + (config.delayMs || 700);
+      let released = false;
+      waiter.resolve(() => {
+        if (released) return;
+        released = true;
+        gate.active -= 1;
+        pumpProviderGate(provider);
+      });
+    }
+  };
+
+  const acquireProviderSlot = (provider, priority = 0) => new Promise((resolve) => {
+    const gate = getProviderGate(provider);
+    gate.waiters.push({ priority: Number(priority) || 0, seq: ++gate.seq, resolve });
+    pumpProviderGate(provider);
+  });
+
+  const fetchWithTimeout = async (provider, url, options = {}, priority = 0) => {
+    // The network deadline starts after the slot is acquired and includes the body.
+    const release = await acquireProviderSlot(provider, priority);
+    const controller = new AbortController();
+    let timer;
+    const deadline = new Promise((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new ProviderError(provider, `${provider} timeout`, 0));
+      }, getProviderConfig(provider).timeoutMs || 10000);
+    });
+    try {
+      return await Promise.race([deadline, (async () => {
+        const response = await fetch(url, { ...options, signal: controller.signal });
+        const body = await response.text();
+        return {
+          ok: response.ok, status: response.status, headers: response.headers,
+          text: async () => body,
+          json: async () => JSON.parse(body)
+        };
+      })()]);
+    } catch (error) {
+      if (error instanceof ProviderError) throw error;
+      throw new ProviderError(provider, error?.name === 'AbortError'
+        ? `${provider} timeout` : (error?.message || String(error)), 0);
     } finally {
       clearTimeout(timer);
+      release();
     }
   };
 
@@ -223,42 +372,11 @@
     return `${trimmed}${path}`;
   };
 
-  const providerLanguage = (provider, lang) => {
-    const normalized = String(lang || '').trim();
-    if (!normalized) return '';
-    if (provider === 'libretranslate') {
-      if (/^zh/i.test(normalized)) return 'zh';
-      if (/^pt-BR$/i.test(normalized)) return 'pt';
-      return normalized.split('-')[0];
-    }
-    if (provider === 'lingva') {
-      if (/^zh/i.test(normalized)) return 'zh';
-      return normalized.split('-')[0];
-    }
-    if (provider === 'mymemory') {
-      if (/^zh/i.test(normalized)) return 'zh-TW';
-      return normalized.split('-')[0] || 'auto';
-    }
-    if (provider === 'microsoft-edge') {
-      if (/^zh/i.test(normalized)) return 'zh-Hant';
-      if (/^pt-BR$/i.test(normalized)) return 'pt-BR';
-      return normalized.split('-')[0] || 'auto';
-    }
-    if (provider === 'google-html') {
-      if (/^zh/i.test(normalized)) return 'zh-TW';
-      return normalized === 'auto' ? 'auto' : normalized.split('-')[0];
-    }
-    return normalized;
-  };
+  const providerLanguage = (provider, lang, role = 'target') => LANG.providerLanguage(provider, lang, role);
 
   const guessSourceLang = (text, fallback = 'auto') => {
-    const value = String(text || '');
     if (fallback && fallback !== 'auto') return fallback;
-    if (/[\u3040-\u30ff]/.test(value)) return 'ja';
-    if (/[\uac00-\ud7af]/.test(value)) return 'ko';
-    if (/[A-Za-z]/.test(value)) return 'en';
-    if (/[\u4e00-\u9fff]/.test(value)) return 'zh-CN';
-    return 'en';
+    return LANG.guessLanguageFromText(text);
   };
 
   const parseGoogleArrayTranslation = (data) => {
@@ -268,6 +386,12 @@
     }
     if (Array.isArray(data)) {
       const first = data[0];
+      // clients5 dict endpoint: ["譯文"] with a fixed source, or
+      // [["譯文", "detected-lang"]] with sl=auto. Never append the language code.
+      if (typeof first === 'string') return normalizeText(decodeHtml(first));
+      if (Array.isArray(first) && typeof first[0] === 'string' && (first.length === 1 || /^[a-z]{2,3}(?:-[A-Za-z]{2,4})?$/.test(String(first[1] || '')))) {
+        return normalizeText(decodeHtml(first[0]));
+      }
       if (Array.isArray(first)) {
         if (Array.isArray(first[0])) {
           const joined = first.map((part) => Array.isArray(part) ? part[0] : '').filter(Boolean).join('');
@@ -280,57 +404,135 @@
     return '';
   };
 
-  const getMicrosoftToken = async () => {
-    const safeNow = now();
-    if (microsoftToken && microsoftTokenExpiresAt > safeNow + 60000) return microsoftToken;
-    const provider = 'microsoft-edge';
-    const response = await fetchWithTimeout(provider, MICROSOFT_AUTH_URL, {
-      method: 'GET',
-      credentials: 'omit',
-      cache: 'no-store'
-    });
-    const token = await response.text().catch(() => '');
-    if (!response.ok || !token) {
-      throw new ProviderError(provider, `Microsoft auth failed: ${response.status}`, response.status);
-    }
-    microsoftToken = token.trim();
-    microsoftTokenExpiresAt = safeNow + 8 * 60 * 1000;
-    return microsoftToken;
-  };
-
-  const translateViaMicrosoftEdge = async ({ text, sourceLang, targetLang }) => {
-    const provider = 'microsoft-edge';
-    const token = await getMicrosoftToken();
-    const source = sourceLang && sourceLang !== 'auto' ? providerLanguage(provider, sourceLang) : '';
+  // Microsoft Translator v3 (Azure AI Translator). The user brings their own
+  // key; the free F0 tier allows 2 million characters per month.
+  const microsoftTranslateTexts = async ({ texts, sourceLang, targetLang, settings, priority = 0 }) => {
+    const provider = 'microsoft-azure';
+    const key = String(settings?.azureTranslatorKey || '').trim();
+    if (!key) throw new ProviderError(provider, 'NO_AZURE_TRANSLATOR_KEY', 401);
+    const source = sourceLang && sourceLang !== 'auto' ? providerLanguage(provider, sourceLang, 'source') : '';
     const target = providerLanguage(provider, targetLang || 'zh-TW');
-    const params = new URLSearchParams({ 'api-version': '3.0', to: target, includeSentenceLength: 'true', textType: 'html' });
+    const params = new URLSearchParams({ 'api-version': '3.0', to: target, textType: 'plain' });
     if (source) params.set('from', source);
-    const response = await fetchWithTimeout(provider, `${MICROSOFT_TRANSLATE_URL}?${params.toString()}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Ocp-Apim-Subscription-Key': token,
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify([{ Text: text }]),
-      credentials: 'omit',
-      cache: 'no-store'
-    });
+    const headers = { 'Content-Type': 'application/json', 'Ocp-Apim-Subscription-Key': key };
+    const region = String(settings?.azureTranslatorRegion || '').trim();
+    if (region && region.toLowerCase() !== 'global') headers['Ocp-Apim-Subscription-Region'] = region;
+    const response = await fetchWithTimeout(provider, `${AZURE_TRANSLATE_URL}?${params.toString()}`, {
+      method: 'POST', headers, body: JSON.stringify(texts.map((text) => ({ Text: text }))), credentials: 'omit', cache: 'no-store'
+    }, priority);
     const data = await response.json().catch(() => null);
-    if (!response.ok) throw new ProviderError(provider, `Microsoft Edge Translate failed: ${response.status}`, response.status);
-    const translated = data?.[0]?.translations?.[0]?.text;
-    if (!translated) throw new ProviderError(provider, 'Unexpected Microsoft Edge Translate response shape.', response.status);
-    return normalizeText(decodeHtml(translated));
+    if (!response.ok) {
+      const message = data?.error?.message || `Microsoft Translator failed: ${response.status}`;
+      throw new ProviderError(provider, message, response.status);
+    }
+    if (!Array.isArray(data) || data.length !== texts.length) {
+      throw new ProviderError(provider, 'Unexpected Microsoft Translator response shape.', response.status);
+    }
+    const result = data.map((item) => normalizeText(item?.translations?.[0]?.text || ''));
+    if (result.some((item) => !item)) throw new ProviderError(provider, 'Microsoft Translator returned empty text.', response.status);
+    return result;
   };
 
-  const translateViaGoogleFree = async ({ text, sourceLang, targetLang }) => {
+  const translateViaMicrosoftAzure = async (args) => {
+    const [translated] = await microsoftTranslateTexts({ ...args, texts: [args.text] });
+    return translated;
+  };
+
+  // DeepL API. Free-plan keys end in ":fx" and must use the api-free host.
+  const deeplTranslateTexts = async ({ texts, sourceLang, targetLang, settings, priority = 0 }) => {
+    const provider = 'deepl';
+    const key = String(settings?.deeplApiKey || '').trim();
+    if (!key) throw new ProviderError(provider, 'NO_DEEPL_API_KEY', 401);
+    const body = { text: texts, target_lang: providerLanguage(provider, targetLang || 'zh-TW') };
+    if (sourceLang && sourceLang !== 'auto') body.source_lang = providerLanguage(provider, sourceLang, 'source');
+    const response = await fetchWithTimeout(provider, key.endsWith(':fx') ? DEEPL_FREE_URL : DEEPL_PRO_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `DeepL-Auth-Key ${key}` },
+      body: JSON.stringify(body),
+      credentials: 'omit',
+      cache: 'no-store'
+    }, priority);
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      // 456 = monthly character quota used up; treat like a rate limit.
+      const status = response.status === 456 ? 429 : response.status;
+      const message = response.status === 456 ? 'DEEPL_QUOTA_EXCEEDED' : (data?.message || `DeepL failed: ${response.status}`);
+      throw new ProviderError(provider, message, status);
+    }
+    const translations = Array.isArray(data?.translations) ? data.translations : [];
+    const result = translations.map((item) => normalizeText(item?.text || ''));
+    if (result.length !== texts.length || result.some((item) => !item)) {
+      throw new ProviderError(provider, 'Unexpected DeepL response shape.', response.status);
+    }
+    return result;
+  };
+
+  const translateViaDeepL = async (args) => {
+    const [translated] = await deeplTranslateTexts({ ...args, texts: [args.text] });
+    return translated;
+  };
+
+  // The visible subtitle should not sit on "Translating..." while a 50 MB model
+  // downloads: after this wait it reports the loading state instead, and the
+  // download keeps going so prefetch fills the subtitles in once it is ready.
+  const BERGAMOT_FOREGROUND_WAIT_MS = 8000;
+
+  // Firefox's Chinese models emit ASCII punctuation ("嗎?", "收看,下週見!").
+  // Convert it only where it follows a Han character, so "3.5" or "U.S." stay.
+  const FULL_WIDTH = { ',': '，', '?': '？', '!': '！', ':': '：', ';': '；', '.': '。' };
+  const toFullWidthCjkPunctuation = (text) => String(text || '')
+    .replace(/([㐀-鿿豈-﫿])\s*([,?!:;.])(?!\d)\s*/gu, (_m, han, mark) => `${han}${FULL_WIDTH[mark]}`);
+
+  const translateBatchViaBergamot = async ({ texts, sourceLang, targetLang, priority = 0 }) => {
+    const engine = globalThis.YTBBI_BERGAMOT;
+    if (!engine) throw new ProviderError('bergamot', '[BERGAMOT_ENGINE_LOAD_FAILED] engine script missing', 422);
+    const release = await acquireProviderSlot('bergamot', priority);
+    const work = engine.translateTexts({ texts, sourceLang, targetLang });
+    work.catch(() => undefined).finally(release);
+    try {
+      let output;
+      if (priority > 0) {
+        let timer;
+        const waited = new Promise((_resolve, reject) => {
+          timer = setTimeout(async () => {
+            const info = await engine.getStatus().catch(() => ({}));
+            const percent = info.total ? Math.floor((info.received / info.total) * 100) : 0;
+            reject(new ProviderError('bergamot', `[BERGAMOT_MODEL_LOADING] ${info.state || 'loading'} ${percent}%`, 503));
+          }, BERGAMOT_FOREGROUND_WAIT_MS);
+        });
+        try {
+          output = await Promise.race([work, waited]);
+        } finally {
+          clearTimeout(timer);
+        }
+      } else {
+        output = await work;
+      }
+      const isChinese = LANG.baseLanguage(targetLang) === 'zh';
+      const result = output.map((text) => (isChinese ? toFullWidthCjkPunctuation(normalizeText(text)) : normalizeText(text)));
+      if (result.length !== texts.length || result.some((item) => !item)) {
+        throw new ProviderError('bergamot', '[BERGAMOT_TRANSLATE_FAILED] empty output', 422);
+      }
+      return result;
+    } catch (error) {
+      if (error instanceof ProviderError) throw error;
+      throw new ProviderError('bergamot', error.message || String(error), error.status || 422);
+    }
+  };
+
+  const translateViaBergamot = async (args) => {
+    const [translated] = await translateBatchViaBergamot({ ...args, texts: [args.text] });
+    return translated;
+  };
+
+  const translateViaGoogleFree = async ({ text, sourceLang, targetLang, priority }) => {
     const provider = 'google-free';
-    const source = sourceLang && sourceLang !== 'auto' ? sourceLang : 'auto';
-    const target = targetLang || 'zh-TW';
+    const source = sourceLang && sourceLang !== 'auto' ? providerLanguage(provider, sourceLang) : 'auto';
+    const target = providerLanguage(provider, targetLang || 'zh-TW');
     const params = new URLSearchParams({ client: 'gtx', sl: source, tl: target, dt: 't', q: text });
     const response = await fetchWithTimeout(provider, `https://translate.googleapis.com/translate_a/single?${params.toString()}`, {
       method: 'GET', credentials: 'omit', cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => null);
     if (!response.ok || !Array.isArray(data)) {
       throw new ProviderError(provider, `Google Free Translate failed: ${response.status}`, response.status);
@@ -340,14 +542,14 @@
     return translated;
   };
 
-  const translateViaGoogleDict = async ({ text, sourceLang, targetLang }) => {
+  const translateViaGoogleDict = async ({ text, sourceLang, targetLang, priority }) => {
     const provider = 'google-dict';
-    const source = sourceLang && sourceLang !== 'auto' ? sourceLang : 'auto';
-    const target = targetLang || 'zh-TW';
+    const source = sourceLang && sourceLang !== 'auto' ? providerLanguage(provider, sourceLang) : 'auto';
+    const target = providerLanguage(provider, targetLang || 'zh-TW');
     const params = new URLSearchParams({ client: 'dict-chrome-ex', sl: source, tl: target, q: text });
     const response = await fetchWithTimeout(provider, `https://clients5.google.com/translate_a/t?${params.toString()}`, {
       method: 'GET', credentials: 'omit', cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => null);
     if (!response.ok || data == null) {
       throw new ProviderError(provider, `Google Dictionary endpoint failed: ${response.status}`, response.status);
@@ -357,34 +559,42 @@
     return translated;
   };
 
-  const translateViaLibreTranslate = async ({ text, sourceLang, targetLang, settings }) => {
+  // LibreTranslate renamed Chinese codes (zt -> zh-Hant) in v1.6; self-hosted
+  // instances may run either version, so try each spelling on a 400.
+  const libreTranslateRequest = async ({ q, sourceLang, targetLang, settings, priority }) => {
     const provider = 'libretranslate';
     const baseUrl = settings.libreTranslateUrl || 'https://libretranslate.com';
     const source = sourceLang && sourceLang !== 'auto' ? providerLanguage(provider, sourceLang) : 'auto';
-    const target = providerLanguage(provider, targetLang || settings.targetLang || 'zh-TW');
-    const payload = { q: text, source, target, format: 'text' };
-    if (settings.libreTranslateApiKey) payload.api_key = settings.libreTranslateApiKey;
-
-    const response = await fetchWithTimeout(provider, buildUrl(baseUrl, '/translate'), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), credentials: 'omit', cache: 'no-store'
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const message = data?.error || data?.message || `LibreTranslate failed: ${response.status}`;
-      throw new ProviderError(provider, message, response.status);
+    const targets = LANG.providerLanguageCandidates(provider, targetLang || settings.targetLang || 'zh-TW');
+    let lastError = null;
+    for (const target of targets) {
+      const payload = { q, source, target, format: 'text' };
+      if (settings.libreTranslateApiKey) payload.api_key = settings.libreTranslateApiKey;
+      const response = await fetchWithTimeout(provider, buildUrl(baseUrl, '/translate'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), credentials: 'omit', cache: 'no-store'
+      }, priority);
+      const data = await response.json().catch(() => ({}));
+      if (response.ok) return { data, status: response.status };
+      lastError = new ProviderError(provider, data?.error || data?.message || `LibreTranslate failed: ${response.status}`, response.status);
+      if (response.status !== 400) break;
     }
+    throw lastError;
+  };
+
+  const translateViaLibreTranslate = async ({ text, sourceLang, targetLang, settings, priority }) => {
+    const { data, status } = await libreTranslateRequest({ q: text, sourceLang, targetLang, settings, priority });
     const translated = data?.translatedText;
-    if (!translated) throw new ProviderError(provider, 'Unexpected LibreTranslate response shape.', response.status);
+    if (!translated || typeof translated !== 'string') throw new ProviderError('libretranslate', 'Unexpected LibreTranslate response shape.', status);
     return normalizeText(decodeHtml(translated));
   };
 
-  const translateViaLingva = async ({ text, sourceLang, targetLang, settings }) => {
+  const translateViaLingva = async ({ text, sourceLang, targetLang, settings, priority }) => {
     const provider = 'lingva';
     const baseUrl = settings.lingvaInstanceUrl || 'https://lingva.ml';
     const source = sourceLang && sourceLang !== 'auto' ? providerLanguage(provider, sourceLang) : 'auto';
     const target = providerLanguage(provider, targetLang || settings.targetLang || 'zh-TW');
     const endpoint = buildUrl(baseUrl, `/api/v1/${encodeURIComponent(source)}/${encodeURIComponent(target)}/${encodeURIComponent(text)}`);
-    const response = await fetchWithTimeout(provider, endpoint, { method: 'GET', credentials: 'omit', cache: 'no-store' });
+    const response = await fetchWithTimeout(provider, endpoint, { method: 'GET', credentials: 'omit', cache: 'no-store' }, priority);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const message = data?.error || data?.message || `Lingva failed: ${response.status}`;
@@ -395,19 +605,27 @@
     return normalizeText(decodeHtml(translated));
   };
 
-  const translateViaMyMemory = async ({ text, sourceLang, targetLang }) => {
+  const translateViaMyMemory = async ({ text, sourceLang, targetLang, priority }) => {
     const provider = 'mymemory';
-    const source = providerLanguage(provider, guessSourceLang(text, sourceLang));
+    const sourceCode = guessSourceLang(text, sourceLang);
+    const source = providerLanguage(provider, sourceCode);
     const target = providerLanguage(provider, targetLang || 'zh-TW');
+    if (source === target || LANG.isSameLanguage(sourceCode, targetLang || 'zh-TW')) {
+      throw new ProviderError(provider, 'MyMemory cannot translate between identical languages.', 400);
+    }
     const params = new URLSearchParams({ q: text, langpair: `${source}|${target}` });
     const response = await fetchWithTimeout(provider, `https://api.mymemory.translated.net/get?${params.toString()}`, {
       method: 'GET', credentials: 'omit', cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new ProviderError(provider, data?.responseDetails || `MyMemory failed: ${response.status}`, response.status);
-    }
+    // MyMemory reports quota/usage errors with HTTP 200 and puts the warning in
+    // translatedText, so the inner status must be checked before caching.
+    const innerStatus = Number(data?.responseStatus || response.status);
     const translated = data?.responseData?.translatedText;
+    if (!response.ok || innerStatus !== 200 || /MYMEMORY WARNING|QUERY LENGTH LIMIT|INVALID LANGUAGE PAIR/i.test(String(translated || ''))) {
+      const status = !response.ok ? response.status : (innerStatus === 200 ? 429 : innerStatus);
+      throw new ProviderError(provider, normalizeText(data?.responseDetails || translated) || `MyMemory failed: ${status}`, status);
+    }
     if (!translated) throw new ProviderError(provider, 'Unexpected MyMemory response shape.', response.status);
     return normalizeText(decodeHtml(translated));
   };
@@ -487,7 +705,7 @@
     'Return only the translation.'
   ].join('\n');
 
-  const callGeminiGenerateContent = async ({ apiKey, model, payload }) => {
+  const callGeminiGenerateContent = async ({ apiKey, model, payload, priority = 0 }) => {
     const key = String(apiKey || '').trim();
     const modelId = normalizeGeminiModelId(model);
     if (!key) throw new ProviderError('gemini', 'NO_GEMINI_API_KEY', 0);
@@ -503,7 +721,7 @@
       body: JSON.stringify(payload),
       credentials: 'omit',
       cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new ProviderError(providerKey, getGeminiErrorMessage(data, response.status), response.status);
@@ -511,7 +729,7 @@
     return data;
   };
 
-  const translateViaGeminiModel = async ({ text, sourceLang, targetLang, apiKey, model }) => {
+  const translateViaGeminiModel = async ({ text, sourceLang, targetLang, apiKey, model, priority = 0 }) => {
     const tgt = targetLang || 'zh-TW';
     const targetName = geminiLanguageName(tgt);
     const sourceHint = sourceLang && sourceLang !== 'auto' ? `Source language hint: ${sourceLang}.\n` : '';
@@ -524,7 +742,7 @@
         parts: [{ text: `${sourceHint}Target language: ${tgt}.\nSubtitle:\n${text}` }]
       }]
     };
-    const data = await callGeminiGenerateContent({ apiKey, model, payload });
+    const data = await callGeminiGenerateContent({ apiKey, model, payload, priority });
     const translated = extractGeminiText(data);
     if (!translated) {
       throw new ProviderError(geminiModelProviderKey(model), 'Gemini returned an empty translation.', 502);
@@ -554,7 +772,7 @@
     return result.every(Boolean) ? result : null;
   };
 
-  const translateBatchViaGeminiModel = async ({ texts, sourceLang, targetLang, apiKey, model }) => {
+  const translateBatchViaGeminiModel = async ({ texts, sourceLang, targetLang, apiKey, model, priority = 0 }) => {
     const tgt = targetLang || 'zh-TW';
     const targetName = geminiLanguageName(tgt);
     const items = texts.map((text, id) => ({ id, text }));
@@ -595,7 +813,7 @@
         }
       }
     };
-    const data = await callGeminiGenerateContent({ apiKey, model, payload });
+    const data = await callGeminiGenerateContent({ apiKey, model, payload, priority });
     const raw = extractGeminiText(data);
     const translated = parseGeminiBatchJson(raw, texts.length);
     if (!translated) {
@@ -639,18 +857,18 @@
     throw new ProviderError('gemini', `All Gemini models failed. ${errors.join(' | ')}`, 503);
   };
 
-  const translateViaGemini = async ({ text, sourceLang, targetLang, settings }) => {
+  const translateViaGemini = async ({ text, sourceLang, targetLang, settings, priority }) => {
     const response = await runGeminiWithModelFailover({
       settings,
-      task: ({ apiKey, model }) => translateViaGeminiModel({ text, sourceLang, targetLang, apiKey, model })
+      task: ({ apiKey, model }) => translateViaGeminiModel({ text, sourceLang, targetLang, apiKey, model, priority })
     });
     return response.result;
   };
 
-  const translateBatchViaGemini = async ({ texts, sourceLang, targetLang, settings }) => {
+  const translateBatchViaGemini = async ({ texts, sourceLang, targetLang, settings, priority }) => {
     const response = await runGeminiWithModelFailover({
       settings,
-      task: ({ apiKey, model }) => translateBatchViaGeminiModel({ texts, sourceLang, targetLang, apiKey, model })
+      task: ({ apiKey, model }) => translateBatchViaGeminiModel({ texts, sourceLang, targetLang, apiKey, model, priority })
     });
     return response.result;
   };
@@ -672,7 +890,7 @@
         },
         credentials: 'omit',
         cache: 'no-store'
-      });
+      }, 2);
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new ProviderError('gemini', getGeminiErrorMessage(data, response.status, 'Gemini model list failed'), response.status);
@@ -765,7 +983,7 @@
     return result;
   };
 
-  const translateViaCloudV2 = async ({ text, sourceLang, targetLang, settings }) => {
+  const translateViaCloudV2 = async ({ text, sourceLang, targetLang, settings, priority }) => {
     const provider = 'cloud-v2';
     const apiKey = String(settings.googleCloudApiKey || '').trim();
     if (!apiKey) throw new ProviderError(provider, 'NO_GOOGLE_CLOUD_API_KEY', 0);
@@ -777,7 +995,7 @@
     if (source && source !== 'auto') body.set('source', source);
     const response = await fetchWithTimeout(provider, `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(apiKey)}`, {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: body.toString(), credentials: 'omit', cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const message = data?.error?.message || `Cloud Translation API v2 failed: ${response.status}`;
@@ -788,7 +1006,7 @@
     return normalizeText(decodeHtml(translated));
   };
 
-  const translateViaCloudV3Proxy = async ({ text, sourceLang, targetLang, settings }) => {
+  const translateViaCloudV3Proxy = async ({ text, sourceLang, targetLang, settings, priority }) => {
     const provider = 'cloud-v3-proxy';
     const proxyUrl = String(settings.cloudV3ProxyUrl || '').trim();
     if (!proxyUrl) throw new ProviderError(provider, 'NO_CLOUD_V3_PROXY_URL', 0);
@@ -797,7 +1015,7 @@
     if (source && source !== 'auto') payload.sourceLanguageCode = source;
     const response = await fetchWithTimeout(provider, proxyUrl, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), credentials: 'omit', cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const message = data?.error?.message || data?.error || `Cloud Translation API v3 proxy failed: ${response.status}`;
@@ -812,7 +1030,9 @@
     if (provider === 'gemini') return translateViaGemini(args);
     if (provider === 'cloud-v2') return translateViaCloudV2(args);
     if (provider === 'cloud-v3-proxy') return translateViaCloudV3Proxy(args);
-    if (provider === 'microsoft-edge') return translateViaMicrosoftEdge(args);
+    if (provider === 'microsoft-azure') return translateViaMicrosoftAzure(args);
+    if (provider === 'deepl') return translateViaDeepL(args);
+    if (provider === 'bergamot') return translateViaBergamot(args);
     if (provider === 'libretranslate') return translateViaLibreTranslate(args);
     if (provider === 'lingva') return translateViaLingva(args);
     if (provider === 'mymemory') return translateViaMyMemory(args);
@@ -822,38 +1042,41 @@
 
   const getProviderOrder = (settings) => {
     const provider = settings.translationProvider || 'auto-free';
+    const failover = settings.autoFailover !== false;
     if (provider === 'auto-free') return AUTO_FREE_ORDER.slice();
-    if (provider === 'google-free' && settings.autoFailover !== false) return GOOGLE_FALLBACK_ORDER.slice();
-    if (provider === 'microsoft-edge' && settings.autoFailover !== false) return ['microsoft-edge', 'google-free', 'google-dict', 'lingva', 'libretranslate', 'mymemory'];
-    if (provider === 'lingva' && settings.autoFailover !== false) return ['lingva', 'microsoft-edge', 'google-free', 'google-dict', 'libretranslate', 'mymemory'];
-    if (provider === 'libretranslate' && settings.autoFailover !== false) return ['libretranslate', 'microsoft-edge', 'google-free', 'google-dict', 'lingva', 'mymemory'];
-    if (provider === 'mymemory' && settings.autoFailover !== false) return ['mymemory', 'microsoft-edge', 'google-free', 'google-dict', 'lingva', 'libretranslate'];
+    // Local translation never sends subtitles to a server unless the user
+    // explicitly enabled the cloud fallback for it.
+    if (provider === 'bergamot') return settings.bergamotCloudFallback === true ? ['bergamot', ...AUTO_FREE_ORDER] : ['bergamot'];
+    if (!failover) return [provider];
+    if (provider === 'google-free') return GOOGLE_FALLBACK_ORDER.slice();
+    if (['deepl', 'microsoft-azure', 'lingva', 'libretranslate', 'mymemory'].includes(provider)) {
+      return [provider, ...AUTO_FREE_ORDER.filter((item) => item !== provider)];
+    }
     return [provider];
   };
 
-  const normalizeTranslateCacheText = (text) => {
-    const normalized = normalizeText(text).toLowerCase();
-    const compact = normalized.replace(/[\s\p{P}\p{S}]+/gu, '');
-    return compact || normalized;
-  };
+  const makeTranslateCacheKey = (sourceLang, targetLang, text, scope = translationCacheScope) =>
+    JSON.stringify([scope, sourceLang, targetLang, normalizeText(text)]);
 
-  const makeTranslateCacheKey = (sourceLang, targetLang, text) => `${sourceLang}|${targetLang}|${normalizeTranslateCacheText(text)}`;
-
-  const retryProviderTask = async (provider, task, attempts = 2) => {
+  const retryProviderTask = async (task, attempts = 2) => {
     let lastError = null;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
         return await task();
       } catch (error) {
         lastError = error;
-        if (!isRateLimitOrTransient(error) || attempt >= attempts - 1) break;
+        if (!isRetryable(error) || attempt >= attempts - 1) break;
         await sleep(350 * Math.pow(2, attempt));
       }
     }
     throw lastError;
   };
 
-  const translateUsingProviders = async ({ normalized, sourceLang, targetLang, settings }) => {
+  // The subtitle on screen fails over to the next provider immediately; only
+  // background prefetch spends time retrying the same provider.
+  const attemptsFor = (provider, priority) => (provider === 'gemini' || priority > 0 ? 1 : 2);
+
+  const translateUsingProviders = async ({ normalized, sourceLang, targetLang, settings, priority = 0 }) => {
     const order = getProviderOrder(settings);
     const errors = [];
     const activeProviders = order.filter((provider) => !isProviderCoolingDown(provider));
@@ -861,15 +1084,8 @@
 
     for (const provider of providersToTry) {
       try {
-        const task = () => callProvider(provider, {
-          text: normalized,
-          sourceLang,
-          targetLang,
-          settings
-        });
-        const translated = provider === 'gemini'
-          ? await task()
-          : await retryProviderTask(provider, task);
+        const task = () => callProvider(provider, { text: normalized, sourceLang, targetLang, settings, priority });
+        const translated = await retryProviderTask(task, attemptsFor(provider, priority));
         markProviderSuccess(provider);
         return translated;
       } catch (error) {
@@ -888,22 +1104,150 @@
     const settings = await getSettings();
     const src = sourceLang || settings.sourceLang || 'auto';
     const tgt = targetLang || settings.targetLang || 'zh-TW';
-    const cacheKey = makeTranslateCacheKey(src, tgt, normalized);
+    const cacheKey = makeTranslateCacheKey(src, tgt, normalized, settings.translationCacheScope);
 
     if (!force && translateCache.has(cacheKey)) return translateCache.get(cacheKey);
-    if (!force && inflightTranslate.has(cacheKey)) return inflightTranslate.get(cacheKey);
+    if (!force && inflightTranslate.has(cacheKey)) {
+      promoteTranslationJob(cacheKey);
+      return inflightTranslate.get(cacheKey);
+    }
+    const job = createTranslationJob({ sourceLang: src, targetLang: tgt, settings, force, priority: 1 });
+    const item = reserveTranslation(normalized, cacheKey, job);
+    queueTranslationJob(job);
+    return item.promise;
+  };
 
-    const task = (async () => {
-      const translated = await translateUsingProviders({ normalized, sourceLang: src, targetLang: tgt, settings });
-      cacheSet(translateCache, cacheKey, translated);
-      return translated;
-    })();
+  const createTranslationJob = ({ sourceLang, targetLang, settings, force, priority, owners = [] }) => ({
+    sourceLang, targetLang, settings, force, priority, items: [], owners: new Set(owners), started: false
+  });
 
-    if (!force) inflightTranslate.set(cacheKey, task);
-    try {
-      return await task;
-    } finally {
-      inflightTranslate.delete(cacheKey);
+  const reserveTranslation = (text, cacheKey, job) => {
+    let resolve, reject;
+    const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+    // A reservation may fail before a foreground caller subscribes to it.
+    promise.catch(() => undefined);
+    const item = { text, cacheKey, promise, resolve, reject, settled: false, source: '' };
+    job.items.push(item);
+    if (!job.force) {
+      inflightTranslate.set(cacheKey, promise);
+      translationJobByKey.set(cacheKey, job);
+    }
+    return item;
+  };
+
+  const settleTranslationItem = (item, job, translatedText, error, source) => {
+    if (item.settled) return;
+    item.settled = true;
+    item.source = source;
+    if (inflightTranslate.get(item.cacheKey) === item.promise) {
+      inflightTranslate.delete(item.cacheKey);
+      translationJobByKey.delete(item.cacheKey);
+    }
+    const translated = normalizeText(translatedText);
+    if (error || !translated) item.reject(error || new Error('Empty translation'));
+    else {
+      if (job.settings.translationCacheScope === translationCacheScope) {
+        cacheSet(translateCache, item.cacheKey, translated);
+        schedulePersistTranslationCache();
+      }
+      item.resolve(translated);
+    }
+  };
+
+  const executeTranslationJob = async (job) => {
+    const items = job.items.filter((item) => {
+      if (!job.force && translateCache.has(item.cacheKey)) {
+        settleTranslationItem(item, job, translateCache.get(item.cacheKey), null, 'cache');
+        return false;
+      }
+      return !item.settled;
+    });
+    if (job.useBatch && items.length >= 2) {
+      try {
+        const result = await translateBatchUsingProviders({
+          texts: items.map((item) => item.text), sourceLang: job.sourceLang, targetLang: job.targetLang, settings: job.settings,
+          priority: job.priority
+        });
+        items.forEach((item, index) => {
+          if (normalizeText(result.translated?.[index])) settleTranslationItem(item, job, result.translated[index], null, `batch:${result.provider}`);
+        });
+      } catch (error) {
+        if (job.settings.debug) log('batch failed; falling back to singles', error);
+      }
+    }
+    // Resolve each item as soon as it finishes, including the single fallback.
+    for (const item of items.filter((entry) => !entry.settled)) {
+      try {
+        const translated = await translateUsingProviders({
+          normalized: item.text, sourceLang: job.sourceLang, targetLang: job.targetLang, settings: job.settings,
+          priority: job.priority
+        });
+        settleTranslationItem(item, job, translated, null, job.useBatch ? 'single-fallback' : 'single');
+      } catch (error) {
+        settleTranslationItem(item, job, '', error, 'failed');
+      }
+    }
+  };
+
+  const MAX_FOREGROUND_JOBS = 3;
+  const MAX_PREFETCH_JOBS = 1;
+
+  const drainTranslationJobs = () => {
+    // Foreground and prefetch jobs have separate worker budgets, so a slow
+    // prefetch batch can never occupy the slot the visible subtitle needs.
+    while (true) {
+      translationJobs.sort((a, b) => b.priority - a.priority);
+      const index = translationJobs.findIndex((job) => (job.priority > 0
+        ? activeTranslationJobs - activePrefetchJobs < MAX_FOREGROUND_JOBS
+        : activePrefetchJobs < MAX_PREFETCH_JOBS));
+      if (index < 0) return;
+      const job = translationJobs.splice(index, 1)[0];
+      const isPrefetch = job.priority === 0;
+      job.started = true;
+      activeTranslationJobs += 1;
+      if (isPrefetch) activePrefetchJobs += 1;
+      executeTranslationJob(job).catch((error) => {
+        job.items.forEach((item) => settleTranslationItem(item, job, '', error, 'failed'));
+      }).finally(() => {
+        activeTranslationJobs -= 1;
+        if (isPrefetch) activePrefetchJobs -= 1;
+        drainTranslationJobs();
+      });
+    }
+  };
+
+  const queueTranslationJob = (job) => {
+    translationJobs.push(job);
+    Promise.resolve().then(drainTranslationJobs);
+  };
+
+  const promoteTranslationJob = (cacheKey) => {
+    const job = translationJobByKey.get(cacheKey);
+    if (!job) return;
+    job.priority = 1;
+    Promise.resolve().then(drainTranslationJobs);
+  };
+
+  const cancelObsoletePrefetch = (tabId, contextId) => {
+    if (tabId == null) return;
+    const prefix = `tab:${tabId}|`;
+    const currentOwner = `${prefix}${contextId || ''}`;
+    for (let index = prefetchBatchQueue.length - 1; index >= 0; index -= 1) {
+      const item = prefetchBatchQueue[index];
+      if (item.owner?.startsWith(prefix) && item.owner !== currentOwner) {
+        prefetchBatchQueue.splice(index, 1);
+        item.resolve({ ok: true, count: 0, results: [], errors: [], mode: 'cancelled' });
+      }
+    }
+    for (let index = translationJobs.length - 1; index >= 0; index -= 1) {
+      const job = translationJobs[index];
+      job.owners.forEach((owner) => {
+        if (owner.startsWith(prefix) && owner !== currentOwner) job.owners.delete(owner);
+      });
+      if (job.priority === 0 && job.owners.size === 0) {
+        translationJobs.splice(index, 1);
+        job.items.forEach((item) => settleTranslationItem(item, job, '', new Error('PREFETCH_CANCELLED'), 'cancelled'));
+      }
     }
   };
 
@@ -917,23 +1261,6 @@
     const batches = [];
     for (let i = 0; i < items.length; i += size) batches.push(items.slice(i, i + size));
     return batches;
-  };
-
-  const splitDelimitedTranslation = (translated, count) => {
-    const value = normalizeText(translated);
-    const escaped = BATCH_SEPARATOR.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const patterns = [
-      new RegExp(escaped, 'i'),
-      /§+\s*YTBBI[_\s-]*BATCH[_\s-]*SPLIT\s*§+/i,
-      /YTBBI[_\s-]*BATCH[_\s-]*SPLIT/i
-    ];
-
-    for (const pattern of patterns) {
-      const parts = value.split(pattern).map(normalizeText);
-      if (parts.length === count && parts.every(Boolean)) return parts;
-    }
-
-    return null;
   };
 
   const buildMarkedBatchInput = (texts) => texts
@@ -991,81 +1318,47 @@ ${text}
     return result.every(Boolean) ? result : null;
   };
 
-  const translateDelimiterGroup = async (provider, { texts, sourceLang, targetLang, settings, allowBisect = true }) => {
-    const marked = buildMarkedBatchInput(texts);
-    const translatedMarked = await callProvider(provider, { text: marked, sourceLang, targetLang, settings });
-    const framedParts = splitFramedTranslation(translatedMarked, texts.length);
-    if (framedParts) return framedParts;
-
-    const markedParts = splitMarkedTranslation(translatedMarked, texts.length);
-    if (markedParts) return markedParts;
-
-    // If a free endpoint rewrites one of the markers, retry once as two smaller
-    // groups. This is substantially cheaper than immediately falling all the way
-    // back to one request per subtitle, while keeping item IDs validated.
-    if (allowBisect && texts.length >= 4) {
-      const mid = Math.ceil(texts.length / 2);
-      const left = await translateDelimiterGroup(provider, {
-        texts: texts.slice(0, mid), sourceLang, targetLang, settings, allowBisect: false
-      });
-      const right = await translateDelimiterGroup(provider, {
-        texts: texts.slice(mid), sourceLang, targetLang, settings, allowBisect: false
-      });
-      return [...left, ...right];
+  class BatchFormatError extends ProviderError {
+    constructor(provider, message) {
+      super(provider, message, 422);
+      this.name = 'BatchFormatError';
+      this.batchFormat = true;
     }
+  }
 
-    // Legacy separator fallback is retained for small groups only.
-    const joined = texts.join(BATCH_SEPARATOR);
-    const translated = await callProvider(provider, { text: joined, sourceLang, targetLang, settings });
-    const parts = splitDelimitedTranslation(translated, texts.length);
-    if (!parts) {
-      throw new ProviderError(provider, `${PROVIDERS[provider]?.label || provider} batch markers were not preserved.`, 422);
+  const markerUnreliableUntil = new Map();
+
+  // Free endpoints without a batch API get one framed request per group. If the
+  // provider rewrites the markers we do not bisect or retry: the job falls back
+  // to single requests, and that provider skips marker batches for a while.
+  const translateDelimiterGroup = async (provider, { texts, sourceLang, targetLang, settings, priority }) => {
+    const translatedMarked = await callProvider(provider, { text: buildMarkedBatchInput(texts), sourceLang, targetLang, settings, priority });
+    const parts = splitFramedTranslation(translatedMarked, texts.length) || splitMarkedTranslation(translatedMarked, texts.length);
+    if (!parts || parts.some((part) => /YTBBI/i.test(part))) {
+      throw new BatchFormatError(provider, `${PROVIDERS[provider]?.label || provider} batch markers were not preserved.`);
     }
     return parts;
   };
 
-  const translateBatchViaDelimiter = async (provider, { texts, sourceLang, targetLang, settings }) => {
-    // Browser-safe free endpoints usually accept one text string rather than a
-    // native array. Keep each delimiter-based request at <= 8 cues so users can
-    // select 12/16 globally without creating fragile oversized GET/marker payloads.
+  const translateBatchViaDelimiter = async (provider, { texts, sourceLang, targetLang, settings, priority }) => {
+    if ((markerUnreliableUntil.get(provider) || 0) > now()) {
+      throw new BatchFormatError(provider, `${PROVIDERS[provider]?.label || provider} marker batches are paused.`);
+    }
     const result = [];
-    for (const group of splitIntoBatches(texts, DELIMITER_SAFE_BATCH_SIZE)) {
-      const translated = await translateDelimiterGroup(provider, { texts: group, sourceLang, targetLang, settings });
-      result.push(...translated);
+    try {
+      for (const group of splitIntoBatches(texts, DELIMITER_SAFE_BATCH_SIZE)) {
+        result.push(...await translateDelimiterGroup(provider, { texts: group, sourceLang, targetLang, settings, priority }));
+      }
+    } catch (error) {
+      if (error?.batchFormat) markerUnreliableUntil.set(provider, now() + MARKER_COOLDOWN_MS);
+      throw error;
     }
     return result;
   };
 
-  const translateBatchViaMicrosoftEdge = async ({ texts, sourceLang, targetLang }) => {
-    const provider = 'microsoft-edge';
-    const token = await getMicrosoftToken();
-    const source = sourceLang && sourceLang !== 'auto' ? providerLanguage(provider, sourceLang) : '';
-    const target = providerLanguage(provider, targetLang || 'zh-TW');
-    const params = new URLSearchParams({ 'api-version': '3.0', to: target, includeSentenceLength: 'true', textType: 'html' });
-    if (source) params.set('from', source);
-    const body = texts.map((text) => ({ Text: text }));
-    const response = await fetchWithTimeout(provider, `${MICROSOFT_TRANSLATE_URL}?${params.toString()}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Ocp-Apim-Subscription-Key': token,
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify(body),
-      credentials: 'omit',
-      cache: 'no-store'
-    });
-    const data = await response.json().catch(() => null);
-    if (!response.ok) throw new ProviderError(provider, `Microsoft Edge Translate batch failed: ${response.status}`, response.status);
-    if (!Array.isArray(data) || data.length !== texts.length) {
-      throw new ProviderError(provider, 'Unexpected Microsoft Edge Translate batch response shape.', response.status);
-    }
-    const result = data.map((item) => normalizeText(decodeHtml(item?.translations?.[0]?.text || '')));
-    if (result.some((item) => !item)) throw new ProviderError(provider, 'Microsoft Edge Translate batch returned empty text.', response.status);
-    return result;
-  };
+  const translateBatchViaMicrosoftAzure = (args) => microsoftTranslateTexts(args);
 
-  const translateBatchViaCloudV2 = async ({ texts, sourceLang, targetLang, settings }) => {
+  const translateBatchViaCloudV2 = async ({ texts, sourceLang, targetLang, settings, priority }) => {
     const provider = 'cloud-v2';
     const apiKey = String(settings.googleCloudApiKey || '').trim();
     if (!apiKey) throw new ProviderError(provider, 'NO_GOOGLE_CLOUD_API_KEY', 0);
@@ -1077,7 +1370,7 @@ ${text}
     if (source && source !== 'auto') body.set('source', source);
     const response = await fetchWithTimeout(provider, `https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(apiKey)}`, {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: body.toString(), credentials: 'omit', cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const message = data?.error?.message || `Cloud Translation API v2 batch failed: ${response.status}`;
@@ -1091,7 +1384,7 @@ ${text}
     return result;
   };
 
-  const translateBatchViaCloudV3Proxy = async ({ texts, sourceLang, targetLang, settings }) => {
+  const translateBatchViaCloudV3Proxy = async ({ texts, sourceLang, targetLang, settings, priority }) => {
     const provider = 'cloud-v3-proxy';
     const proxyUrl = String(settings.cloudV3ProxyUrl || '').trim();
     if (!proxyUrl) throw new ProviderError(provider, 'NO_CLOUD_V3_PROXY_URL', 0);
@@ -1100,7 +1393,7 @@ ${text}
     if (source && source !== 'auto') payload.sourceLanguageCode = source;
     const response = await fetchWithTimeout(provider, proxyUrl, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), credentials: 'omit', cache: 'no-store'
-    });
+    }, priority);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const message = data?.error?.message || data?.error || `Cloud Translation API v3 proxy batch failed: ${response.status}`;
@@ -1114,28 +1407,14 @@ ${text}
     return result;
   };
 
-  const translateBatchViaLibreTranslate = async ({ texts, sourceLang, targetLang, settings }) => {
-    const provider = 'libretranslate';
-    const baseUrl = settings.libreTranslateUrl || 'https://libretranslate.com';
-    const source = sourceLang && sourceLang !== 'auto' ? providerLanguage(provider, sourceLang) : 'auto';
-    const target = providerLanguage(provider, targetLang || settings.targetLang || 'zh-TW');
-    const payload = { q: texts, source, target, format: 'text' };
-    if (settings.libreTranslateApiKey) payload.api_key = settings.libreTranslateApiKey;
-
-    const response = await fetchWithTimeout(provider, buildUrl(baseUrl, '/translate'), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), credentials: 'omit', cache: 'no-store'
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const message = data?.error || data?.message || `LibreTranslate batch failed: ${response.status}`;
-      throw new ProviderError(provider, message, response.status);
-    }
+  const translateBatchViaLibreTranslate = async ({ texts, sourceLang, targetLang, settings, priority }) => {
+    const { data } = await libreTranslateRequest({ q: texts, sourceLang, targetLang, settings, priority });
     const translated = data?.translatedText;
     const result = Array.isArray(translated)
       ? translated.map((item) => normalizeText(decodeHtml(item)))
       : null;
     if (!result || result.length !== texts.length || result.some((item) => !item)) {
-      throw new ProviderError(provider, 'LibreTranslate instance does not support native batch response shape.', 422);
+      throw new ProviderError('libretranslate', 'LibreTranslate instance does not support native batch response shape.', 422);
     }
     return result;
   };
@@ -1144,14 +1423,16 @@ ${text}
     if (provider === 'gemini') return translateBatchViaGemini(args);
     if (provider === 'cloud-v2') return translateBatchViaCloudV2(args);
     if (provider === 'cloud-v3-proxy') return translateBatchViaCloudV3Proxy(args);
-    if (provider === 'microsoft-edge') return translateBatchViaMicrosoftEdge(args);
+    if (provider === 'microsoft-azure') return translateBatchViaMicrosoftAzure(args);
+    if (provider === 'deepl') return deeplTranslateTexts(args);
+    if (provider === 'bergamot') return translateBatchViaBergamot(args);
     if (provider === 'libretranslate') return translateBatchViaLibreTranslate(args);
     // Free Google, Google Dictionary, Lingva, and MyMemory do not reliably expose
     // a formal batch API to browser extensions. Use a guarded delimiter batch.
     return translateBatchViaDelimiter(provider, args);
   };
 
-  const translateBatchUsingProviders = async ({ texts, sourceLang, targetLang, settings }) => {
+  const translateBatchUsingProviders = async ({ texts, sourceLang, targetLang, settings, priority = 0 }) => {
     const order = getProviderOrder(settings);
     const errors = [];
     const activeProviders = order.filter((provider) => !isProviderCoolingDown(provider));
@@ -1159,23 +1440,25 @@ ${text}
 
     for (const provider of providersToTry) {
       try {
-        const task = () => callProviderBatch(provider, { texts, sourceLang, targetLang, settings });
-        const translated = provider === 'gemini'
-          ? await task()
-          : await retryProviderTask(provider, task);
+        const task = () => callProviderBatch(provider, { texts, sourceLang, targetLang, settings, priority });
+        const translated = await retryProviderTask(task, attemptsFor(provider, priority));
         markProviderSuccess(provider);
         return { provider, translated };
       } catch (error) {
-        markProviderFailure(provider, error);
         errors.push(`${PROVIDERS[provider]?.label || provider}: ${error.message || String(error)}`);
         if (settings.debug) log('batch provider failed', provider, error);
+        // A healthy provider that only mangled markers is not a failure, and
+        // trying the next (lower-quality) provider's markers rarely helps:
+        // let the job fall back to single requests on the preferred provider.
+        if (error?.batchFormat) break;
+        markProviderFailure(provider, error);
       }
     }
 
     throw new Error(`All batch translation providers failed. ${errors.join(' | ')}`);
   };
 
-  const translateBatch = async ({ texts, sourceLang, targetLang, force = false }) => {
+  const translateBatch = async ({ texts, sourceLang, targetLang, force = false, priority = 1, owners = ['shared'] }) => {
     const settings = await getSettings();
     const src = sourceLang || settings.sourceLang || 'auto';
     const tgt = targetLang || settings.targetLang || 'zh-TW';
@@ -1183,96 +1466,39 @@ ${text}
     const results = [];
     const errors = [];
     const pending = [];
-    const missing = [];
-
+    const jobs = [];
+    const batchSize = settings.batchTranslationEnabled !== false ? getBatchSize(settings) : 1;
     for (const text of normalizedTexts) {
-      const cacheKey = makeTranslateCacheKey(src, tgt, text);
+      const cacheKey = makeTranslateCacheKey(src, tgt, text, settings.translationCacheScope);
       if (!force && translateCache.has(cacheKey)) {
         results.push({ text, translatedText: translateCache.get(cacheKey), source: 'cache' });
         continue;
       }
       if (!force && inflightTranslate.has(cacheKey)) {
+        if (priority > 0) promoteTranslationJob(cacheKey);
+        const existingJob = translationJobByKey.get(cacheKey);
+        owners.forEach((owner) => existingJob?.owners.add(owner));
         pending.push(inflightTranslate.get(cacheKey)
           .then((translatedText) => results.push({ text, translatedText, source: 'inflight' }))
           .catch((error) => errors.push({ text, error: error.message || String(error) })));
         continue;
       }
-      missing.push(text);
-    }
-
-    if (pending.length) await Promise.allSettled(pending);
-    if (!missing.length) return { ok: true, count: results.length, results, errors, mode: 'cache' };
-
-    const useBatch = settings.batchTranslationEnabled !== false && missing.length >= 2;
-    if (!useBatch) {
-      for (const text of missing) {
-        try {
-          const translatedText = await translateText({ text, sourceLang: src, targetLang: tgt, force });
-          results.push({ text, translatedText, source: 'single' });
-        } catch (error) {
-          errors.push({ text, error: error.message || String(error) });
-        }
+      let job = jobs[jobs.length - 1];
+      if (!job || job.items.length >= batchSize) {
+        job = createTranslationJob({ sourceLang: src, targetLang: tgt, settings, force, priority, owners });
+        job.useBatch = batchSize > 1;
+        jobs.push(job);
       }
-      return { ok: true, count: results.length, results, errors, mode: 'single' };
+      const item = reserveTranslation(text, cacheKey, job);
+      pending.push(item.promise
+        .then((translatedText) => results.push({ text, translatedText, source: item.source }))
+        .catch((error) => errors.push({ text, error: error.message || String(error) })));
     }
-
-    const batchSize = getBatchSize(settings);
-    for (const group of splitIntoBatches(missing, batchSize)) {
-      const batchTask = (async () => {
-        try {
-          const batchResult = await translateBatchUsingProviders({ texts: group, sourceLang: src, targetLang: tgt, settings });
-          const map = new Map();
-          group.forEach((text, index) => {
-            const cleaned = normalizeText(batchResult.translated?.[index]);
-            if (!cleaned) {
-              map.set(text, { error: 'Batch provider returned no translation', source: `batch:${batchResult.provider}` });
-              return;
-            }
-            const cacheKey = makeTranslateCacheKey(src, tgt, text);
-            cacheSet(translateCache, cacheKey, cleaned);
-            map.set(text, { translatedText: cleaned, source: `batch:${batchResult.provider}` });
-          });
-          return map;
-        } catch (batchError) {
-          if (settings.debug) log('batch failed; falling back to singles', batchError);
-          const map = new Map();
-          for (const text of group) {
-            try {
-              const translatedText = await translateUsingProviders({ normalized: text, sourceLang: src, targetLang: tgt, settings });
-              const cacheKey = makeTranslateCacheKey(src, tgt, text);
-              cacheSet(translateCache, cacheKey, translatedText);
-              map.set(text, { translatedText, source: 'single-fallback' });
-            } catch (error) {
-              map.set(text, { error: error.message || String(error), source: 'failed' });
-            }
-          }
-          return map;
-        }
-      })();
-
-      group.forEach((text) => {
-        const cacheKey = makeTranslateCacheKey(src, tgt, text);
-        const promise = batchTask.then((map) => {
-          const item = map.get(text);
-          if (item?.translatedText) return item.translatedText;
-          throw new Error(item?.error || 'Batch translation failed');
-        });
-        if (!force) inflightTranslate.set(cacheKey, promise);
-      });
-
-      const map = await batchTask;
-      group.forEach((text) => inflightTranslate.delete(makeTranslateCacheKey(src, tgt, text)));
-
-      for (const text of group) {
-        const item = map.get(text);
-        if (item?.translatedText) results.push({ text, translatedText: item.translatedText, source: item.source });
-        else errors.push({ text, error: item?.error || 'Batch translation failed' });
-      }
-
-      await sleep(120);
-    }
-
-    return { ok: true, count: results.length, results, errors, mode: 'batch' };
+    // Reserve every item before starting work; missing items need not wait for
+    // unrelated inflight items. The public batch result still includes all items.
+    jobs.forEach(queueTranslationJob);
+    await Promise.all(pending);
+    return { ok: true, count: results.length, results, errors, mode: jobs.length ? (batchSize > 1 ? 'batch' : 'single') : 'cache' };
   };
 
 
@@ -1418,11 +1644,8 @@ ${text}
   const fetchEnglishDictionary = async (term) => {
     const normalized = normalizeTerm(term).toLowerCase();
     if (!normalized) return null;
-    const response = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(normalized)}`, {
-      method: 'GET', credentials: 'omit', cache: 'force-cache'
-    });
-    if (!response.ok) return null;
-    const data = await response.json();
+    const data = await fetchJsonWithTimeout(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(normalized)}`, 6000)
+      .catch(() => null);
     const entry = Array.isArray(data) ? data[0] : null;
     if (!entry) return null;
 
@@ -1452,23 +1675,26 @@ ${text}
   const lookupWord = async ({ term, context, url, title, targetLang }) => {
     const normalized = normalizeTerm(term);
     if (!normalized) throw new Error('EMPTY_LOOKUP_TERM');
-    const key = `${normalized.toLowerCase()}|${targetLang || (await getSettings()).targetLang || DEFAULT_SETTINGS.targetLang}`;
-    if (dictionaryCache.has(key)) {
-      return { ...dictionaryCache.get(key), context: normalizeText(context || ''), url: url || '', title: title || '', lookedUpAt: new Date().toISOString() };
-    }
+    const target = targetLang || (await getSettings()).targetLang || DEFAULT_SETTINGS.targetLang;
+    const key = `${normalized.toLowerCase()}|${target}`;
+    const withContext = (entry) => ({ ...entry, context: normalizeText(context || ''), url: url || '', title: title || '', lookedUpAt: new Date().toISOString() });
+    if (dictionaryCache.has(key)) return withContext(dictionaryCache.get(key));
 
-    const dictionary = await fetchEnglishDictionary(normalized).catch(() => null);
-    const image = await lookupWordImage(normalized, dictionary).catch(() => null);
-    let meaningZh = '';
-    try { meaningZh = await translateText({ text: normalized, sourceLang: 'auto', targetLang: targetLang || (await getSettings()).targetLang || DEFAULT_SETTINGS.targetLang }); } catch (_error) { meaningZh = ''; }
-    let definitionZh = '';
-    if (dictionary?.definitionEn) {
-      try { definitionZh = await translateText({ text: dictionary.definitionEn, sourceLang: 'auto', targetLang: targetLang || (await getSettings()).targetLang || DEFAULT_SETTINGS.targetLang }); } catch (_error) { definitionZh = ''; }
-    }
-    let exampleZh = '';
-    if (dictionary?.exampleEn) {
-      try { exampleZh = await translateText({ text: dictionary.exampleEn, sourceLang: 'auto', targetLang: targetLang || (await getSettings()).targetLang || DEFAULT_SETTINGS.targetLang }); } catch (_error) { exampleZh = ''; }
-    }
+    // Word cards only open for English tokens, so the source is known. Passing
+    // 'en' avoids auto-detect mistakes such as "die" (German) or "chef" (French).
+    const translateEnglish = (text) => (text
+      ? translateText({ text, sourceLang: 'en', targetLang: target }).catch(() => '')
+      : Promise.resolve(''));
+
+    const dictionaryPromise = fetchEnglishDictionary(normalized).catch(() => null);
+    const meaningPromise = translateEnglish(normalized);
+    const dictionary = await dictionaryPromise;
+    const [meaningZh, definitionZh, exampleZh, image] = await Promise.all([
+      meaningPromise,
+      translateEnglish(dictionary?.definitionEn),
+      translateEnglish(dictionary?.exampleEn),
+      lookupWordImage(normalized, dictionary).catch(() => null)
+    ]);
 
     const result = {
       term: normalized,
@@ -1482,14 +1708,10 @@ ${text}
       exampleZh,
       meaningZh,
       image,
-      context: normalizeText(context || ''),
-      url: url || '',
-      title: title || '',
-      lookedUpAt: new Date().toISOString(),
-      targetLang: targetLang || (await getSettings()).targetLang || DEFAULT_SETTINGS.targetLang
+      targetLang: target
     };
     cacheSet(dictionaryCache, key, result);
-    return result;
+    return withContext(result);
   };
 
   const addVocabulary = async (entry) => {
@@ -1564,7 +1786,8 @@ ${text}
         const combinedErrors = [];
         const responseModes = [];
         for (const chunk of splitIntoBatches(allTexts, MAX_PREFETCH_TEXTS_PER_REQUEST)) {
-          const response = await translateBatch({ texts: chunk, sourceLang: groupData.sourceLang, targetLang: groupData.targetLang });
+          const response = await translateBatch({ texts: chunk, sourceLang: groupData.sourceLang, targetLang: groupData.targetLang,
+            priority: 0, owners: items.map((item) => item.owner || 'shared') });
           combinedResults.push(...(response.results || []));
           combinedErrors.push(...(response.errors || []));
           if (response.mode) responseModes.push(response.mode);
@@ -1591,13 +1814,14 @@ ${text}
     }
   };
 
-  const prefetchTranslations = async ({ texts, sourceLang, targetLang }) => {
+  const prefetchTranslations = async ({ texts, sourceLang, targetLang, owner = 'shared' }) => {
+    const settings = await getSettings();
     const normalizedTexts = Array.from(new Set((texts || []).map(normalizeText).filter(Boolean))).slice(0, MAX_PREFETCH_TEXTS_PER_REQUEST);
-    const cacheKey = `${sourceLang || 'auto'}|${targetLang || DEFAULT_SETTINGS.targetLang}|${normalizedTexts.join('\n')}`;
+    const cacheKey = JSON.stringify([settings.translationCacheScope, owner, sourceLang || 'auto', targetLang || DEFAULT_SETTINGS.targetLang, normalizedTexts]);
     if (prefetchBatchInflight.has(cacheKey)) return prefetchBatchInflight.get(cacheKey);
 
     const promise = new Promise((resolve, reject) => {
-      prefetchBatchQueue.push({ texts: normalizedTexts, sourceLang: sourceLang || 'auto', targetLang: targetLang || DEFAULT_SETTINGS.targetLang, resolve, reject });
+      prefetchBatchQueue.push({ texts: normalizedTexts, sourceLang: sourceLang || 'auto', targetLang: targetLang || DEFAULT_SETTINGS.targetLang, owner, resolve, reject });
       if (!prefetchBatchTimer) {
         prefetchBatchTimer = setTimeout(flushPrefetchBatchQueue, 100);
       }
@@ -1607,14 +1831,40 @@ ${text}
     return promise;
   };
 
+  // Bergamot has no language detection. Content scripts send the caption
+  // track's language as `sourceHint`; it is used only when the selected
+  // provider chain includes Bergamot, so cloud providers keep auto-detect.
+  const resolveSourceLang = async (sourceLang, sourceHint) => {
+    if (sourceLang && sourceLang !== 'auto') return sourceLang;
+    const settings = await getSettings();
+    if (!getProviderOrder(settings).includes('bergamot')) return sourceLang || 'auto';
+    return String(sourceHint || '').trim() || 'auto';
+  };
+
   const handleMessage = async (message, sender) => {
     if (!message || typeof message !== 'object') return { ok: false, error: 'EMPTY_MESSAGE' };
     switch (message.type) {
       case 'YTBBI_TRANSLATE_TEXT': {
-        const translatedText = await translateText({ text: message.text, sourceLang: message.sourceLang, targetLang: message.targetLang, force: !!message.force });
+        const sourceLang = await resolveSourceLang(message.sourceLang, message.sourceHint);
+        const translatedText = await translateText({ text: message.text, sourceLang, targetLang: message.targetLang, force: !!message.force });
         return { ok: true, translatedText };
       }
-      case 'YTBBI_PREFETCH_TRANSLATIONS': return prefetchTranslations({ texts: message.texts, sourceLang: message.sourceLang || 'auto', targetLang: message.targetLang || DEFAULT_SETTINGS.targetLang });
+      case 'YTBBI_PREFETCH_TRANSLATIONS': return prefetchTranslations({ texts: message.texts,
+        sourceLang: await resolveSourceLang(message.sourceLang || 'auto', message.sourceHint),
+        targetLang: message.targetLang || DEFAULT_SETTINGS.targetLang,
+        owner: sender?.tab?.id == null ? 'shared' : `tab:${sender.tab.id}|${message.contextId || ''}` });
+      case 'YTBBI_BERGAMOT_STATUS': return { ok: true, status: await globalThis.YTBBI_BERGAMOT.getStatus() };
+      case 'YTBBI_BERGAMOT_PREPARE': {
+        const settings = await getSettings();
+        await globalThis.YTBBI_BERGAMOT.prepare({ sourceLang: message.sourceLang || 'en', targetLang: message.targetLang || settings.targetLang });
+        return { ok: true, status: await globalThis.YTBBI_BERGAMOT.getStatus() };
+      }
+      case 'YTBBI_BERGAMOT_LIST': return { ok: true, directions: await globalThis.YTBBI_BERGAMOT.listDirections() };
+      case 'YTBBI_BERGAMOT_CLEAR': return globalThis.YTBBI_BERGAMOT.clearModels();
+      case 'YTBBI_CANCEL_PREFETCH': {
+        cancelObsoletePrefetch(sender?.tab?.id, message.contextId);
+        return { ok: true };
+      }
       case 'YTBBI_TRANSLATE_BATCH': return translateBatch({ texts: message.texts, sourceLang: message.sourceLang || 'auto', targetLang: message.targetLang || DEFAULT_SETTINGS.targetLang, force: !!message.force });
       case 'YTBBI_GEMINI_LIST_MODELS': {
         const models = await listGeminiModels(message.apiKey);
@@ -1637,9 +1887,11 @@ ${text}
       case 'YTBBI_GET_VOCAB': return getVocabulary();
       case 'YTBBI_REMOVE_VOCAB': return removeVocabulary(message.id);
       case 'YTBBI_CLEAR_VOCAB': return clearVocabulary();
+      case 'YTBBI_CLEAR_TRANSLATION_CACHE': return clearPersistedTranslationCache();
       case 'YTBBI_TEST_TRANSLATION': {
         const settings = await getSettings();
-        const translatedText = await translateText({ text: message.text || 'Hello, this is a translation test.', sourceLang: 'auto', targetLang: message.targetLang || settings.targetLang || DEFAULT_SETTINGS.targetLang, force: true });
+        const sourceLang = message.text ? 'auto' : 'en';
+        const translatedText = await translateText({ text: message.text || 'Hello, this is a translation test.', sourceLang, targetLang: message.targetLang || settings.targetLang || DEFAULT_SETTINGS.targetLang, force: true });
         return { ok: true, translatedText };
       }
       default: return { ok: false, error: `UNKNOWN_MESSAGE_TYPE:${message.type}` };

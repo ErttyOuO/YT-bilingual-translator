@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="./icons/icon-128.png" alt="YouTube雙語字幕翻譯" width="128">
+<img src="./icons/brand-cc-128.png" alt="YouTube雙語字幕翻譯" width="128">
 
 # YouTube雙語字幕翻譯
 
 **Firefox-first 的開源雙語字幕學習擴充功能**
 
-在 YouTube 上將原文字幕與翻譯字幕同步顯示，支援智慧斷句、提前預取、Gemini API、YouTube 原生自動翻譯、單字查詢、字幕拖曳，以及 Twitch Live 原生 CC 雙語字幕。
+在 YouTube 上將原文字幕與翻譯字幕同步顯示，支援智慧斷句、提前預取、Gemini API、多種翻譯來源、單字查詢、字幕拖曳，以及 Twitch Live 原生 CC 雙語字幕。
 
 [![Firefox Add-ons](https://img.shields.io/badge/Firefox-Add--ons-FF7139?logo=firefoxbrowser&logoColor=white)](https://addons.mozilla.org/zh-TW/firefox/addon/youtube%E9%9B%99%E8%AA%9E%E5%AD%97%E5%B9%95%E7%BF%BB%E8%AD%AF/)
 ![Firefox](https://img.shields.io/badge/Firefox-First-orange?logo=firefoxbrowser)
@@ -104,33 +104,20 @@ that game for so long.
 
 擴充功能支援多種翻譯來源，可以依需求在 Popup 的「翻譯」頁切換。
 
-### YouTube 原生自動翻譯
+### 字幕來源與翻譯方式
 
-**免 API Key。**
+YouTube timed-text 用來取得原文字幕與時間軸，譯文則由 Popup 所選的翻譯來源產生。目前版本沒有獨立的「YouTube 原生自動翻譯」Provider。
 
-直接使用 YouTube 自己的 timed-text 自動翻譯結果，而不是模擬點擊播放器的：
+v0.60.0 重寫了翻譯核心：
 
-```text
-設定 → 字幕 → 自動翻譯
-```
+- **繁簡中文不再混用**：所有翻譯來源共用一張語言代碼表（`lang-codes.js`），`zh-TW` 一律對應各家的繁體代碼（Microsoft `zh-Hant`、Lingva `zh_HANT`、LibreTranslate `zh-Hant`／`zt`），`zh-CN` 一律對應簡體代碼。
+- **當前字幕真正優先**：每個翻譯來源有獨立的優先佇列，畫面上的字幕會插隊到等待中的預取請求前面；當前字幕失敗時直接換下一個來源，不在同一來源重試。
+- **整句翻譯**：手動字幕也會合併成完整句子再翻譯；`Mr.`、`U.S.`、`etc.` 不再被當成句尾；日文／中文自動字幕不再被插入空格。
+- **字幕不會在靜音段落殘留**：超過 1.5 秒的空檔後，上一句會在 0.7 秒內消失。
+- **同語言不翻譯**：字幕軌語言與目標語言相同時只顯示原文，不送出任何翻譯請求。
+- **翻譯快取保存在本機**：背景頁被瀏覽器卸載後，已翻好的句子不必重翻；可在 Popup 一鍵清除。
 
-原文仍由本擴充功能的英文 Sentence Timeline 控制，翻譯字幕則依相同時間區間重新對齊。
-
-例如：
-
-```text
-As some of you may know,
-你們有些人可能知道，
-```
-
-目標語言設定會自動對應 YouTube 使用的語言代碼，例如：
-
-```text
-zh-TW → zh-Hant
-zh-CN → zh-Hans
-```
-
-> YouTube 的 timed-text 服務可能出現 429 / 暫時限流。擴充功能包含 single-flight、冷卻與自動重試機制；限流期間會優先保留原文字幕，而不是讓整張字幕 UI 消失。
+播放加速仍受到翻譯服務延遲與額度限制影響。
 
 ### Gemini API
 
@@ -143,14 +130,18 @@ zh-CN → zh-Hans
 - 主要模型出現 429、過載、5xx、timeout 等錯誤時自動切換備援模型
 - 不需要把 API Key 寫進原始碼
 
+Google AI Studio 的完整 `AQ.` 授權型金鑰可直接填入；外掛使用 Gemini 原生端點及 `x-goog-api-key`，不會依前綴自動切換到 Vertex AI。金鑰、模型與額度仍須使用設定頁中的測試確認。
+
 Gemini 批次翻譯使用結構化 ID 配對，降低多句翻譯回傳順序改變造成字幕錯配的機率。
 
 ### 其他翻譯來源
 
 依目前版本設定，可使用或保留的 Provider 包含：
 
-- 自動免費翻譯備援
-- Microsoft 翻譯
+- 自動免費翻譯（免 Key，順序：Google Free → Google Dictionary → MyMemory）
+- **DeepL API**（自備 Key；免費方案每月 50 萬字元）
+- **Microsoft Translator**（Azure，自備 Key 與區域；F0 免費層每月 200 萬字元）
+- **本機翻譯 Bergamot**（不送出字幕，見下方）
 - Google 免費翻譯端點
 - Google Cloud Translation Basic v2（Legacy）
 - Cloud Translation v3 Proxy
@@ -159,6 +150,26 @@ Gemini 批次翻譯使用結構化 ID 配對，降低多句翻譯回傳順序改
 - MyMemory
 
 第三方服務的可用性、速率限制與政策由各服務自行決定。
+
+v0.61.0 移除了 Microsoft Edge 免費端點（2026 年 10 月實測回傳 404）。
+
+### 本機翻譯（Bergamot）
+
+在擴充功能自己的 Web Worker 裡用 WebAssembly 執行 [Bergamot](https://browser.mt/) 翻譯引擎，字幕文字不會送到任何伺服器。
+
+| 項目 | 說明 |
+|---|---|
+| 引擎 | `@browsermt/bergamot-translator` 0.4.9，未修改，隨擴充功能打包（`vendor/bergamot/`，約 5 MB） |
+| 模型 | Firefox Translations 使用的模型，第一次使用時從 Mozilla 下載，每個方向約 50 MB，SHA-256 驗證後存在本機 |
+| 中文 | en→zh-Hant（繁體）、en→zh-Hans（簡體）皆有模型 |
+| 其他語言 | 沒有直接模型時經英文轉換（例如 ja→en→zh-Hant） |
+| 記憶體 | 翻譯時約 300–600 MB |
+| 來源語言 | 取自 YouTube 字幕軌；Twitch 與沒有字幕軌的畫面字幕無法使用 |
+| 失敗時 | 預設只顯示錯誤；勾選「失敗時改用免費雲端翻譯」才會改用 Google |
+
+使用方式：設定頁 →「翻譯」→ 選「本機翻譯 Bergamot」→ 按「準備本機模型」並允許下載。
+
+Chrome 版本無法使用：MV3 service worker 不能建立 Worker。
 
 ---
 
@@ -299,6 +310,9 @@ Firefox 關閉後，暫時載入的擴充功能會被移除。
 ```text
 .
 ├─ manifest.json
+├─ lang-codes.js          # 共用語言代碼表（各翻譯來源的繁簡中文代碼）
+├─ bergamot-engine.js     # 本機翻譯：Worker、模型下載與快取、狀態
+├─ vendor/bergamot/       # Bergamot WASM 引擎（第三方、未修改）
 ├─ background.js
 ├─ content.js
 ├─ content.css
@@ -314,15 +328,34 @@ Firefox 關閉後，暫時載入的擴充功能會被移除。
 │  └─ popup.js
 │
 ├─ icons/
-│  ├─ icon-48.png
-│  ├─ icon-96.png
-│  └─ icon-128.png
+│  ├─ brand-cc-48.png
+│  ├─ brand-cc-96.png
+│  └─ brand-cc-128.png
+│
+├─ tests/
+│  ├─ translation-regression.cjs   # CI 回歸測試（假時鐘、無網路）
+│  └─ live-provider-smoke.cjs      # 手動執行：實際呼叫免費翻譯端點
+│
+├─ tools/
+│  └─ build-xpi.py         # 產生上架用 .xpi
 │
 ├─ README.md
 ├─ CHANGELOG.md
 ├─ PRIVACY.md
 └─ LICENSE
 ```
+
+### 開發與打包
+
+```bash
+node tests/translation-regression.cjs
+```
+
+```bash
+python tools/build-xpi.py
+```
+
+`build-xpi.py` 只打包執行所需的檔案（不含 `docs/`、`tests/`、`.github/`），輸出到 `dist/`。原始碼沒有經過壓縮或轉譯，上架時不需要另外提供 build source。
 
 其他版本的完整原始碼封包中，也可能包含 AMO Reviewer Notes 與測試報告，供 Firefox Add-ons 審核與開發驗證使用。
 
@@ -388,19 +421,11 @@ Twitch Live 功能目前只處理 Twitch 已提供的 Closed Captions，不擷�
 
 ## 常見問題
 
-### 為什麼 YouTube 原生自動翻譯偶爾只有英文？
+### 為什麼字幕有原文，譯文還沒出現？
 
-YouTube timed-text 可能暫時回傳 `429 Too Many Requests`。
+可能是翻譯尚未完成、翻譯服務限流，或 YouTube 的完整字幕下載失敗。v0.53.0 加入當前字幕優先排程、有限次重試，以及預取補回畫面；完整字幕下載失敗時改用畫面字幕組句，最長等待約 2.5 秒，播放加速時會縮短。這段組句時間不包含翻譯服務的網路與生成時間。
 
-目前版本會：
-
-1. 保留原文字幕。
-2. 停止短時間重複打相同請求。
-3. 進入共享 cooldown。
-4. 在冷卻後自動重試。
-5. 翻譯軌成功後補回目標語言。
-
-如果 YouTube 長時間限制該字幕軌，可以暫時改用 Gemini 或其他翻譯 Provider。
+若持續失敗，請檢查目前翻譯來源的錯誤訊息；Gemini 可在設定頁測試金鑰與模型。切換來源後會清除舊譯文快取。
 
 ### 為什麼 YouTube 的字幕不是照官方 CC 每一小段顯示？
 
@@ -464,13 +489,15 @@ YouTube 自動 CC 常會逐字更新或因版面換行產生很短的 fragment�
 
 目前原始碼的主要近期功能包含：
 
+- v0.61.0 DeepL／Azure 自備 Key、本機 Bergamot 翻譯、移除失效的 Microsoft Edge 端點
+- v0.60.0 翻譯核心重寫：繁簡代碼表、Provider 優先佇列、手動字幕整句合併、本機翻譯快取
 - Gemini API Provider
 - Gemini 主要／備援模型
 - 8／12／16 句 Provider-aware Batch
 - 90～150 秒播放速度自適應預取
 - YouTube Timed Sentence Sync
-- YouTube 原生自動翻譯 Provider
-- YouTube Native 429 Single-flight / Cooldown
+- 當前字幕優先排程、逐句完成通知與預取去重
+- 翻譯重試、快取失效與字幕下載 timeout
 - Twitch Live Native CC 雙語字幕
 
 ---

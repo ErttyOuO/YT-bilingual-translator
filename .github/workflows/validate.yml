@@ -14,8 +14,11 @@ jobs:
           node-version: '20'
       - name: Check JavaScript syntax
         run: |
+          node --check lang-codes.js
+          node --check bergamot-engine.js
           node --check background.js
           node --check content.js
+          node --check twitch-content.js
           node --check page-bridge.js
           node --check i18n.js
           node --check popup/popup.js
@@ -23,3 +26,5 @@ jobs:
         run: |
           node -e "JSON.parse(require('fs').readFileSync('manifest.json','utf8')); console.log('manifest ok')"
           node -e "JSON.parse(require('fs').readFileSync('chrome-mv3-template/manifest.mv3.chrome.json','utf8')); console.log('mv3 template ok')"
+      - name: Check subtitle translation regressions
+        run: node tests/translation-regression.cjs

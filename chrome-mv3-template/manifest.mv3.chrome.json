@@ -1,12 +1,12 @@
 {
   "manifest_version": 3,
   "name": "YT Bilingual Translator",
-  "version": "0.26.0",
-  "description": "YouTube bilingual subtitles with an in-player toggle, automatic native-caption hiding, target-language translation, and interactive vocabulary cards.",
+  "version": "0.61.0",
+  "description": "Bilingual subtitles for YouTube and Twitch Live with sentence-level translation, provider failover and vocabulary cards.",
   "icons": {
-    "48": "icons/icon-48.png",
-    "96": "icons/icon-96.png",
-    "128": "icons/icon-128.png"
+    "48": "icons/brand-cc-48.png",
+    "96": "icons/brand-cc-96.png",
+    "128": "icons/brand-cc-128.png"
   },
   "permissions": [
     "storage",
@@ -17,6 +17,7 @@
     "https://translate.googleapis.com/*",
     "https://clients5.google.com/*",
     "https://translation.googleapis.com/*",
+    "https://generativelanguage.googleapis.com/*",
     "https://api.dictionaryapi.dev/*",
     "https://libretranslate.com/*",
     "https://*.libretranslate.com/*",
@@ -25,15 +26,13 @@
     "https://*.lingva.ml/*",
     "https://*.run.app/*",
     "https://*.cloudfunctions.net/*",
-    "https://edge.microsoft.com/*",
-    "https://api-edge.cognitive.microsofttranslator.com/*",
     "https://*.wikipedia.org/*",
     "https://commons.wikimedia.org/*",
     "https://*.wikimedia.org/*",
     "https://api.openverse.org/*"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background-sw.js"
   },
   "content_scripts": [
     {
@@ -41,6 +40,7 @@
         "*://*.youtube.com/*"
       ],
       "js": [
+        "lang-codes.js",
         "i18n.js",
         "content.js"
       ],
@@ -53,8 +53,8 @@
   "action": {
     "default_title": "YT Bilingual Translator",
     "default_icon": {
-      "48": "icons/icon-48.png",
-      "96": "icons/icon-96.png"
+      "48": "icons/brand-cc-48.png",
+      "96": "icons/brand-cc-96.png"
     },
     "default_popup": "popup/popup.html"
   },
@@ -62,11 +62,17 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "page-bridge.js"
+        "page-bridge.js",
+        "icons/brand-cc-48.png"
       ],
       "matches": [
         "*://*.youtube.com/*"
       ]
     }
+  ],
+  "optional_host_permissions": [
+    "https://api-free.deepl.com/*",
+    "https://api.deepl.com/*",
+    "https://api.cognitive.microsofttranslator.com/*"
   ]
 }

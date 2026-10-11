@@ -1,12 +1,12 @@
 {
   "manifest_version": 2,
   "name": "YT Bilingual Translator",
-  "version": "0.52.0",
-  "description": "YouTube and Twitch Live bilingual subtitles with Gemini model failover, adaptive 90–150 second YouTube prefetch, safer high-density batch translation, stable Twitch native-CC support, and learning tools.",
+  "version": "0.61.0",
+  "description": "Bilingual subtitles for YouTube and Twitch Live with sentence-level translation, DeepL/Azure keys and local translation.",
   "icons": {
-    "48": "icons/icon-48.png",
-    "96": "icons/icon-96.png",
-    "128": "icons/icon-128.png"
+    "48": "icons/brand-cc-48.png",
+    "96": "icons/brand-cc-96.png",
+    "128": "icons/brand-cc-128.png"
   },
   "permissions": [
     "storage",
@@ -25,18 +25,25 @@
     "https://*.lingva.ml/*",
     "https://*.run.app/*",
     "https://*.cloudfunctions.net/*",
-    "https://edge.microsoft.com/*",
-    "https://api-edge.cognitive.microsofttranslator.com/*",
     "https://*.wikipedia.org/*",
     "https://commons.wikimedia.org/*",
     "https://upload.wikimedia.org/*"
   ],
+  "optional_permissions": [
+    "https://api-free.deepl.com/*",
+    "https://api.deepl.com/*",
+    "https://api.cognitive.microsofttranslator.com/*",
+    "https://firefox.settings.services.mozilla.com/*",
+    "https://firefox-settings-attachments.cdn.mozilla.net/*"
+  ],
+  "content_security_policy": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
   "content_scripts": [
     {
       "matches": [
         "*://*.youtube.com/*"
       ],
       "js": [
+        "lang-codes.js",
         "i18n.js",
         "content.js"
       ],
@@ -62,8 +69,8 @@
   "browser_action": {
     "default_title": "YT Bilingual Translator",
     "default_icon": {
-      "48": "icons/icon-48.png",
-      "96": "icons/icon-96.png"
+      "48": "icons/brand-cc-48.png",
+      "96": "icons/brand-cc-96.png"
     },
     "default_popup": "popup/popup.html"
   },
@@ -87,12 +94,15 @@
   },
   "background": {
     "scripts": [
+      "lang-codes.js",
+      "bergamot-engine.js",
       "background.js"
     ],
     "persistent": false
   },
   "web_accessible_resources": [
-    "page-bridge.js"
+    "page-bridge.js",
+    "icons/brand-cc-48.png"
   ],
   "homepage_url": "https://github.com/ErttyOuO/YT-bilingual-translator"
 }

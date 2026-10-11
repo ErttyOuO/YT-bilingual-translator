@@ -361,7 +361,17 @@
       button = document.createElement('button');
       button.type = 'button';
       button.className = 'tbt-twitch-player-toggle';
-      button.innerHTML = '<span class="tbt-twitch-player-toggle-icon" aria-hidden="true"><svg class="tbt-twitch-player-toggle-svg" viewBox="0 0 36 36" focusable="false"><rect class="tbt-twitch-player-toggle-box" x="8.5" y="11.5" width="19" height="13" rx="3"></rect><circle class="tbt-twitch-player-toggle-badge" cx="25.5" cy="14.5" r="2.2"></circle><path class="tbt-twitch-player-toggle-line" d="M12 16h7"></path><path class="tbt-twitch-player-toggle-line" d="M12 20h11"></path><path class="tbt-twitch-player-toggle-mark" d="M24.2 14.5h2.6"></path></svg></span>';
+      const icon = document.createElement('img');
+      icon.className = 'tbt-twitch-player-toggle-image';
+      icon.src = EXT.runtime.getURL('icons/brand-cc-48.png');
+      icon.alt = '';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.draggable = false;
+      const iconContainer = document.createElement('span');
+      iconContainer.className = 'tbt-twitch-player-toggle-icon';
+      iconContainer.setAttribute('aria-hidden', 'true');
+      iconContainer.appendChild(icon);
+      button.appendChild(iconContainer);
       button.dataset.aTarget = 'tbt-bilingual-caption-button';
       button.addEventListener('click', (event) => {
         event.preventDefault();
@@ -548,6 +558,7 @@
 
   const getTranslation = (text) => {
     const normalized = normalizeText(text);
+    const requestSettings = state.settings;
     if (!normalized) return Promise.resolve('');
     if (state.translationCache.has(normalized)) return Promise.resolve(state.translationCache.get(normalized));
     if (state.translationInflight.has(normalized)) return state.translationInflight.get(normalized);
@@ -560,12 +571,14 @@
     }).then((response) => {
       if (!response?.ok) throw new Error(response?.error || 'Translation failed');
       const translated = normalizeText(response.translatedText);
-      if (translated) {
+      if (translated && requestSettings === state.settings) {
         state.translationCache.set(normalized, translated);
         if (state.translationCache.size > 500) state.translationCache.delete(state.translationCache.keys().next().value);
       }
       return translated;
-    }).finally(() => state.translationInflight.delete(normalized));
+    }).finally(() => {
+      if (state.translationInflight.get(normalized) === promise) state.translationInflight.delete(normalized);
+    });
 
     state.translationInflight.set(normalized, promise);
     return promise;
@@ -591,12 +604,13 @@
     showOverlay({ original: text, translation: '', status: t('statusTranslating') });
     getTranslation(text).then((translated) => {
       if (!translated) return;
-      if (seq !== state.requestSeq && state.currentDisplayText !== text) return;
+      if (seq !== state.requestSeq || !isTwitchBilingualEnabled()) return;
       if (state.currentDisplayText === text || state.lastNativeText === text) {
         showOverlay({ original: text, translation: translated });
       }
     }).catch((error) => {
       log('translation failed', error);
+      if (seq !== state.requestSeq || !isTwitchBilingualEnabled()) return;
       if (state.currentDisplayText === text) showOverlay({ original: text, translation: '', status: error?.message || 'Translation failed' });
     });
   }
@@ -1205,6 +1219,9 @@
   const onSettingsChanged = async () => {
     const wasEffective = isTwitchBilingualEnabled();
     state.settings = await storageGet();
+    state.requestSeq += 1;
+    state.translationCache.clear();
+    state.translationInflight.clear();
     const isEffective = isTwitchBilingualEnabled();
     applySettingsToDom();
     updatePlayerToggleState();
@@ -1221,8 +1238,8 @@
     if (!wasEffective && isEffective) state.autoEnableLastAttemptAt = 0;
     syncContext();
     if (state.currentDisplayText) {
-      const translated = state.translationCache.get(state.currentDisplayText) || '';
-      showOverlay({ original: state.currentDisplayText, translation: translated, status: translated ? '' : t('statusTranslating') });
+      state.pendingText = state.currentDisplayText;
+      flushPendingCaption();
     }
   };
 

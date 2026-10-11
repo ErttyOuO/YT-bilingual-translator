@@ -438,34 +438,12 @@ html.ytbbi-shorts-mode .ytbbi-popover {
   transition: color 160ms ease, opacity 160ms ease, transform 160ms ease, background-color 160ms ease;
 }
 
-.ytbbi-player-toggle-svg {
-  width: 25px;
-  height: 25px;
+.ytbbi-player-toggle-image {
+  width: 28px;
+  height: 28px;
   display: block;
-  overflow: visible;
-}
-
-.ytbbi-player-toggle-box,
-.ytbbi-player-toggle-badge,
-.ytbbi-player-toggle-line,
-.ytbbi-player-toggle-mark {
-  vector-effect: non-scaling-stroke;
-}
-
-.ytbbi-player-toggle-box,
-.ytbbi-player-toggle-badge {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.9;
-}
-
-.ytbbi-player-toggle-line,
-.ytbbi-player-toggle-mark {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.9;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  object-fit: contain;
+  pointer-events: none;
 }
 
 .ytbbi-player-toggle:hover .ytbbi-player-toggle-icon,
@@ -494,9 +472,8 @@ html.ytbbi-shorts-mode .ytbbi-popover {
   opacity: .76;
 }
 
-.ytbbi-player-toggle-off .ytbbi-player-toggle-badge,
-.ytbbi-player-toggle-off .ytbbi-player-toggle-mark {
-  opacity: .55;
+.ytbbi-player-toggle-off .ytbbi-player-toggle-image {
+  filter: grayscale(1);
 }
 
 @media (prefers-reduced-motion: reduce) {
