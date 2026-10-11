@@ -107,16 +107,24 @@
         <label class="field">
           <span data-i18n="translationProvider">翻譯方式</span>
           <select id="translationProvider">
-            <option value="auto-free" data-i18n="providerAutoFree">自動免費模式（Google + 備援）</option>
-            <option value="google-free" data-i18n="providerGoogleFree">免費 Google 翻譯（免 API Key／免 Cloud Project）</option>
-            <option value="deepl" data-i18n="providerDeepL">DeepL API（自備 Key，品質優先）</option>
-            <option value="microsoft-azure" data-i18n="providerAzure">Microsoft Translator（Azure，自備 Key）</option>
-            <option value="bergamot" data-i18n="providerBergamot">本機翻譯 Bergamot（不送出字幕）</option>
-            <option value="gemini" data-i18n="providerGemini">Gemini API（自選主要／備援模型）</option>
-            <option value="cloud-v2" data-i18n="providerCloudV2">官方 Google Cloud Translation Basic v2（API Key）</option>
-            <option value="cloud-v3-proxy" data-i18n="providerCloudV3">官方 Google Cloud Translation v3 translateText（Proxy）</option>
-            <option value="libretranslate" data-i18n="providerLibre">LibreTranslate（開源／可自架）</option>
-            <option value="lingva" data-i18n="providerLingva">Lingva Translate（Google Translate 前端備用）</option>
+            <optgroup label="免費・不用設定" data-i18n-label="providerGroupFree">
+              <option value="auto-free" data-i18n="providerAutoFree">自動選擇（推薦）</option>
+              <option value="google-free" data-i18n="providerGoogleFree">只用 Google 翻譯</option>
+            </optgroup>
+            <optgroup label="翻得更好・需要金鑰" data-i18n-label="providerGroupKey">
+              <option value="deepl" data-i18n="providerDeepL">DeepL：譯文最自然</option>
+              <option value="gemini" data-i18n="providerGemini">Gemini AI：會看上下文</option>
+              <option value="microsoft-azure" data-i18n="providerAzure">Microsoft 翻譯</option>
+            </optgroup>
+            <optgroup label="隱私優先" data-i18n-label="providerGroupPrivate">
+              <option value="bergamot" data-i18n="providerBergamot">在這台電腦上翻譯（字幕不上傳）</option>
+            </optgroup>
+            <optgroup label="進階・需要自己的伺服器或雲端帳號" data-i18n-label="providerGroupAdvanced">
+              <option value="cloud-v2" data-i18n="providerCloudV2">Google Cloud 翻譯（API 金鑰）</option>
+              <option value="cloud-v3-proxy" data-i18n="providerCloudV3">Google Cloud 翻譯（自架轉接伺服器）</option>
+              <option value="libretranslate" data-i18n="providerLibre">LibreTranslate（可自架）</option>
+              <option value="lingva" data-i18n="providerLingva">Lingva（公開伺服器，常無法使用）</option>
+            </optgroup>
           </select>
           <small id="providerHelp"></small>
         </label>

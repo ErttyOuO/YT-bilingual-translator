@@ -100,6 +100,9 @@
     document.querySelectorAll('[data-i18n-title]').forEach((node) => {
       node.setAttribute('title', t(node.dataset.i18nTitle));
     });
+    document.querySelectorAll('[data-i18n-label]').forEach((node) => {
+      node.setAttribute('label', t(node.dataset.i18nLabel));
+    });
     fillTargetLanguageSelects();
     updateProviderUi();
     updateRangeLabels();
